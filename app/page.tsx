@@ -1,15 +1,197 @@
 "use client";
-import {useEffect,useRef,useState} from"react";
-import{Bot,ChevronDown,FileAudio,FileUp,ListMusic,Mic,MoreHorizontal,Pause,Play,Plus,Search,Settings,Sparkles,Upload,Users,WandSparkles}from"lucide-react";
-const meetings=[{t:"V1 產品規劃",k:"會議",d:"今天，上午 10:30",l:"46 分鐘",tags:"產品 · V1",p:["J","M","A"],c:"bg-violet-100 text-violet-700"},{t:"行為經濟學 · 第 4 週",k:"課程",d:"昨天，下午 2:00",l:"1 小時 12 分",tags:"經濟學 · 課程",p:["P","J"],c:"bg-amber-100 text-amber-700"},{t:"使用者訪談 · Maya Chen",k:"訪談",d:"9 月 28 日，下午 4:15",l:"38 分鐘",tags:"研究 · 新手引導",p:["J","M"],c:"bg-emerald-100 text-emerald-700"},{t:"新手引導流程的想法",k:"個人",d:"9 月 27 日，晚上 8:42",l:"3 分鐘",tags:"想法",p:["J"],c:"bg-sky-100 text-sky-700"}];
-const lines=[["00:00","Jay","謝謝大家撥空。我希望今天結束時，能把 V1 的範圍收斂得更明確。"],["00:18","Mia","客戶訪談都指向同一個痛點：會議結束後，使用者很快就失去脈絡。"],["01:07","Jay","如果錄完後立即能在工作區整理內容，這就是產品最重要的承諾。"],["01:42","Alex","第一版應該專注於錄音、逐字稿和筆記畫布。聊天功能先等使用者真正提出需求。"],["02:15","Jay","就這樣決定：V1 不做獨立聊天功能；詢問 AI 放在工作區內。"],["03:02","Mia","我會在下週四前，將訪談主題整理成新手引導檢核表。"]];
-const Avatar=({x}:{x:string})=><span className="grid h-7 w-7 place-items-center rounded-full bg-[#e2e7ff] text-[11px] font-bold text-[#4d51a5]">{x}</span>;
-const Wave=({on=false}:{on?:boolean})=><div className="flex h-8 items-center gap-1 overflow-hidden">{Array.from({length:38},(_,i)=><i key={i} className={`w-[3px] rounded-full ${on?"bg-violet-400":"bg-slate-300"}`} style={{height:`${7+(i*17)%22}px`}}/>)}</div>;
-export default function Home(){const[page,setPage]=useState("dash"),[filter,setFilter]=useState("All"),[q,setQ]=useState(""),[play,setPlay]=useState(false),[ai,setAi]=useState(false),[rec,setRec]=useState(false),[generating,setGenerating]=useState(false),[aiError,setAiError]=useState("");let list=meetings.filter(x=>(filter==="All"||x.k===filter.slice(0,-1))&&x.t.toLowerCase().includes(q.toLowerCase()));const generate=async()=>{setGenerating(true);setAiError("");try{const r=await fetch("/api/ai-notes",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({template:"會議紀錄",transcript:lines.map(x=>`${x[0]} ${x[1]}：${x[2]}`).join("\n")})});if(!r.ok)throw new Error((await r.json()).error);setAi(true)}catch(e:any){setAiError(e.message||"無法產生會議紀錄") }finally{setGenerating(false)}};return <main className="min-h-screen bg-[#f6f7fb] text-[#20253a]"><div className="flex min-h-screen"><aside className="hidden w-[232px] shrink-0 flex-col border-r border-[#e7e9f1] bg-white px-4 py-5 lg:flex"><button onClick={()=>setPage("dash")} className="mb-9 flex items-center gap-3"><span className="grid h-9 w-9 place-items-center rounded-xl bg-[#6d5dfc] text-lg font-black text-white">m</span><b className="text-lg">Memo <i className="not-italic text-[#7969ff]">AI</i></b></button><button onClick={()=>setPage("new")} className="mb-6 flex items-center justify-center gap-2 rounded-xl bg-[#6d5dfc] px-4 py-3 text-sm font-semibold text-white"><Plus size={17}/>新增錄音</button><Nav icon={<ListMusic/>} label="所有錄音" active={page==="dash"} f={()=>setPage("dash")}/><Nav icon={<Search/>} label="搜尋" active={page==="search"} f={()=>setPage("search")}/><p className="mb-2 mt-8 px-3 text-[10px] font-bold uppercase tracking-[.16em] text-slate-400">分類</p>{["Meetings","Lectures","Interviews","Personal"].map(x=><Nav key={x} label={({Meetings:"會議",Lectures:"課程",Interviews:"訪談",Personal:"個人"}as any)[x]} f={()=>{setFilter(x);setPage("dash")}} dot/>)}<div className="mt-auto border-t border-[#eef0f5] pt-4"><Nav icon={<Settings/>} label="設定" active={page==="settings"} f={()=>setPage("settings")}/><div className="mt-4 flex items-center gap-2 px-2"><Avatar x="J"/><span className="text-xs"><b>Jay Lin</b><small className="block text-slate-400">免費工作區</small></span></div></div></aside><section className="min-w-0 flex-1">{page==="dash"&&<Dash {...{list,filter,setFilter,q,setQ,setPage}}/>}{page==="new"&&<New {...{rec,setRec,setPage}}/>}{page==="work"&&<Work {...{play,setPlay,ai,setAi,setPage,generating,generate,aiError}}/>}{page==="search"&&<SearchPage {...{q,setQ,setPage}}/>}{page==="settings"&&<Set/>}</section></div></main>}
-function Nav({icon,label,active,f,dot}:{icon?:any,label:string,active?:boolean,f?:any,dot?:boolean}){return <button onClick={f} className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm ${active?"bg-[#f0efff] font-semibold text-[#6757eb]":"text-slate-600 hover:bg-slate-50"}`}>{icon}{dot&&<i className="h-2 w-2 rounded-full bg-violet-400"/>}{label}</button>}
-function Dash({list,q,setQ,setPage}:any){return <div className="mx-auto max-w-[1440px] px-6 py-7 md:px-10"><header className="mb-9 flex items-center justify-between"><div><p className="text-sm text-slate-400">10 月 1 日，星期二</p><h1 className="mt-1 text-[28px] font-bold">早安，Jay</h1></div><div className="flex gap-3"><button onClick={()=>setPage("new")} className="hidden items-center gap-2 rounded-xl border border-[#e2e5ed] bg-white px-4 py-2.5 text-sm font-semibold md:flex"><Upload size={16}/>上傳檔案</button><button onClick={()=>setPage("new")} className="rounded-xl bg-[#6d5dfc] px-4 py-2.5 text-sm font-semibold text-white"><Plus className="mr-1 inline" size={16}/>新增錄音</button></div></header><div className="mb-7 flex flex-col gap-4 sm:flex-row sm:justify-between"><div className="flex gap-1 overflow-auto rounded-xl bg-[#ebeef5] p-1">{["全部","會議","課程","訪談","個人"].map(x=><button key={x} className={`rounded-lg px-3 py-1.5 text-sm ${x==="全部"?"bg-white font-medium text-[#4338ca] shadow-sm":"text-slate-500"}`}>{x}</button>)}</div><label className="flex items-center gap-2 rounded-xl border border-[#e2e5ed] bg-white px-3 py-2 text-sm text-slate-400"><Search size={16}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="搜尋錄音內容" className="w-48 outline-none"/></label></div><div className="mb-4 flex justify-between text-sm text-slate-500"><span>工作區中共有 <b className="text-slate-800">{list.length} 筆錄音</b></span><span>最近建立⌄</span></div><div className="grid gap-3">{list.map((m:any)=><button onClick={()=>setPage("work")} key={m.t} className="grid grid-cols-[auto_1fr_auto] items-center gap-4 rounded-2xl border border-[#e7e9f1] bg-white p-4 text-left hover:border-[#bcb5ff] hover:shadow-sm"><span className={`grid h-11 w-11 place-items-center rounded-xl ${m.c}`}><FileAudio size={20}/></span><div className="min-w-0"><div className="flex gap-2"><b className="truncate text-[15px]">{m.t}</b><span className="hidden rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 sm:block">{m.k}</span></div><p className="mt-1.5 text-xs text-slate-400">{m.d} · {m.l} · {m.tags}</p></div><div className="flex -space-x-2">{m.p.map((x:string)=><Avatar x={x} key={x}/>)}</div></button>)}</div></div>}
-function New({setPage}:any){const[active,setActive]=useState(false),[paused,setPaused]=useState(false),[seconds,setSeconds]=useState(0),[markers,setMarkers]=useState<number[]>([]),[error,setError]=useState(""),[audioUrl,setAudioUrl]=useState("");const recorder=useRef<MediaRecorder|null>(null),chunks=useRef<Blob[]>([]);useEffect(()=>{if(!active||paused)return;const id=window.setInterval(()=>setSeconds(x=>x+1),1000);return()=>window.clearInterval(id)},[active,paused]);useEffect(()=>()=>audioUrl&&URL.revokeObjectURL(audioUrl),[audioUrl]);const start=async()=>{try{setError("");const stream=await navigator.mediaDevices.getUserMedia({audio:true});chunks.current=[];const r=new MediaRecorder(stream);r.ondataavailable=e=>e.data.size&&chunks.current.push(e.data);r.onstop=()=>{const blob=new Blob(chunks.current,{type:r.mimeType||"audio/webm"});setAudioUrl(URL.createObjectURL(blob));stream.getTracks().forEach(t=>t.stop())};r.start(1000);recorder.current=r;setActive(true)}catch{setError("無法取得麥克風權限。請允許瀏覽器使用麥克風後再試。")}};const stop=()=>{recorder.current?.state!=="inactive"&&recorder.current?.stop();setActive(false);setPaused(false)};const toggle=()=>{const r=recorder.current;if(!r)return;if(r.state==="recording"){r.pause();setPaused(true)}else{r.resume();setPaused(false)}};const time=`${String(Math.floor(seconds/3600)).padStart(2,"0")}:${String(Math.floor(seconds/60)%60).padStart(2,"0")}:${String(seconds%60).padStart(2,"0")}`;if(active||audioUrl)return <div className="flex min-h-screen flex-col items-center justify-center px-6 text-center"><span className="rounded-full bg-red-50 px-3 py-1.5 text-xs font-bold text-red-500">● {paused?"已暫停":"錄音中"}</span><h1 className="mt-7 text-5xl font-bold tabular-nums">{time}</h1><p className="mt-2 text-sm text-slate-400">V1 產品規劃 · 即時錄音</p><div className="my-12 w-full max-w-2xl rounded-3xl border border-[#e5e7ee] bg-white px-7 py-9"><Wave on/><p className="mt-5 text-xs text-slate-400">正在使用你的麥克風錄音</p></div>{audioUrl&&<audio className="mb-6 w-full max-w-xl" controls src={audioUrl}/>}<div className="flex flex-wrap justify-center gap-3">{active&&<button onClick={toggle} className="rounded-full border bg-white p-4">{paused?<Play/>:<Pause/>}</button>}{active?<button onClick={stop} className="rounded-full bg-[#20253a] px-7 py-3 text-sm font-semibold text-white">停止錄音</button>:<button onClick={()=>setPage("work")} className="rounded-full bg-[#6d5dfc] px-7 py-3 text-sm font-semibold text-white">前往工作區</button>}{active&&<button onClick={()=>setMarkers(x=>[...x,seconds])} className="rounded-full border bg-white px-5 py-3 text-sm font-semibold">＋加入標記</button>}</div>{markers.length>0&&<p className="mt-5 text-sm text-slate-500">已加入標記：{markers.map(x=>`${Math.floor(x/60)}:${String(x%60).padStart(2,"0")}`).join("、")}</p>}</div>;return <div className="mx-auto max-w-4xl px-6 py-10"><button onClick={()=>setPage("dash")} className="mb-8 text-sm text-slate-500">← 返回所有錄音</button><p className="text-sm font-semibold text-[#6d5dfc]">新增錄音</p><h1 className="mt-2 text-3xl font-bold">捕捉每個重要時刻</h1><p className="mt-2 text-slate-500">選擇要如何將談話內容帶進 Memo AI。</p>{error&&<p className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-600">{error}</p>}<div className="mt-9 grid gap-4 md:grid-cols-2">{[[<Mic/>,"即時錄音","使用麥克風錄下談話內容。"],[<Users/>,"線上會議","連結行事曆，讓 Memo 加入下一場會議。"],[<FileAudio/>,"上傳音訊","支援 MP3、M4A、WAV 等音訊檔。"],[<FileUp/>,"上傳影片","支援 MP4、MOV 等影片檔並可進行轉錄。"]].map(([i,t,b]:any,n)=><button onClick={()=>n===0?start():alert("此功能將在串接儲存與轉錄服務後啟用。")} key={t} className="rounded-2xl border border-[#e5e7ee] bg-white p-6 text-left hover:border-[#aaa2ff]"><span className="grid h-11 w-11 place-items-center rounded-xl bg-[#eeeaff] text-[#6d5dfc]">{i}</span><b className="mt-5 block">{t}</b><p className="mt-1 text-sm leading-6 text-slate-500">{b}</p></button>)}</div><div className="mt-7 rounded-2xl border bg-white p-5"><b className="text-sm">錄音類型</b><div className="mt-3 flex flex-wrap gap-2">{["會議","課程","訪談","個人","其他"].map((x,i)=><button className={`rounded-full px-4 py-2 text-sm ${i===0?"bg-[#eae8ff] text-[#5b4ed1]":"bg-slate-100 text-slate-600"}`} key={x}>{x}</button>)}</div></div></div>}
-function Work({play,setPlay,ai,setPage,generating,generate,aiError}:any){const[left,setLeft]=useState(42);const drag=(e:any)=>{e.preventDefault();const move=(p:PointerEvent)=>setLeft(Math.max(28,Math.min(68,p.clientX/window.innerWidth*100)));const end=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",end)};window.addEventListener("pointermove",move);window.addEventListener("pointerup",end)};return <div className="flex h-screen flex-col overflow-hidden bg-white"><header className="flex items-center justify-between border-b border-[#e8eaf0] px-5 py-3"><div className="min-w-0"><button onClick={()=>setPage("dash")} className="mr-3 text-sm text-slate-400">←</button><b>V1 產品規劃</b><span className="ml-3 hidden text-xs text-slate-400 sm:inline">今天 · 46 分鐘 · 3 位參與者</span></div><div className="flex gap-2"><button onClick={generate} disabled={generating} className="rounded-lg bg-[#6d5dfc] px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"><Sparkles className="mr-1 inline" size={14}/>{generating?"正在產生…":ai?"重新產生 AI 會議紀錄":"一鍵產生會議紀錄"}</button><button className="rounded-lg border px-3 py-2 text-xs font-semibold"><Bot className="mr-1 inline" size={14}/>詢問 AI</button></div></header><div className="flex flex-1 overflow-hidden"><section style={{width:`${left}%`}} className="flex min-w-[300px] shrink-0 flex-col"><div className="flex justify-between border-b px-5 py-4"><b className="text-sm">逐字稿</b><span className="text-xs text-slate-400">3 位說話者 · 重新命名</span></div><div className="flex items-center gap-3 border-b px-5 py-3"><button onClick={()=>setPlay(!play)} className="grid h-8 w-8 place-items-center rounded-full bg-[#6d5dfc] text-white">{play?<Pause size={14}/>:<Play size={14}/>}</button><Wave/><span className="text-xs text-slate-400">02:15 / 46:08</span></div><div className="overflow-auto px-5 py-3">{lines.map((x:any,i)=><button onClick={()=>setPlay(true)} key={x[0]} className={`grid w-full grid-cols-[48px_1fr] gap-3 rounded-xl p-3 text-left hover:bg-[#f6f5ff] ${i===4?"bg-[#f1efff]":""}`}><span className="pt-0.5 text-xs font-medium text-[#6d5dfc]">{x[0]}</span><div><div className="mb-1 flex gap-2"><Avatar x={x[1][0]}/><b className="text-xs">{x[1]}</b></div><p className="text-sm leading-6 text-slate-600">{x[2]}</p></div></button>)}</div></section><div onPointerDown={drag} title="拖拉調整寬度" className="group z-10 -ml-1 flex w-2 shrink-0 cursor-col-resize items-center justify-center hover:bg-violet-100"><i className="h-12 w-1 rounded-full bg-slate-200 group-hover:bg-violet-400"/></div><section className="min-w-0 flex-1 overflow-auto"><div className="mx-auto max-w-3xl px-8 py-8"><p className="text-xs font-bold tracking-[.15em] text-[#6d5dfc]">AI 筆記 · 會議紀錄</p><h1 className="mt-2 text-3xl font-bold">V1 產品規劃</h1>{ai&&<div className="mt-5 rounded-xl border border-violet-200 bg-violet-50 p-3 text-sm text-violet-800"><WandSparkles className="mr-2 inline" size={16}/>已根據目前的逐字稿更新 AI 會議紀錄。</div>}{aiError&&<div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{aiError}</div>}<Notes/><div className="mt-9 text-sm text-slate-400">＋ 輸入 <b>/</b> 開啟指令選單</div></div></section></div></div>}
-function Notes(){return <article className="mt-8 space-y-7 text-[15px] leading-7"><section><h2 className="mb-2 text-lg font-bold">摘要</h2><p className="text-slate-600">團隊已對焦一個明確的 V1：讓使用者在錄音結束後，立即將談話轉成可編輯、可繼續使用的筆記。第一版優先完成「錄音到工作區」的核心流程，而不是獨立聊天功能。</p></section><section><h2 className="mb-2 text-lg font-bold">重點</h2><ul className="space-y-2 text-slate-600"><li>• 會議結束後使用者容易失去脈絡，工作區必須協助保留上下文。</li><li>• 錄音、逐字稿與可編輯的筆記畫布，是產品的核心循環。</li><li>• 詢問 AI 應置於工作區內，而非做成獨立聊天產品。</li></ul></section><section><h2 className="mb-3 text-lg font-bold">決策</h2><div className="rounded-xl border bg-[#fbfcff] p-4"><b>V1 維持聚焦且精簡</b><p className="mt-1 text-sm text-slate-500">V1 不做獨立聊天功能；情境式 AI 將與逐字稿及筆記並列。</p><button className="mt-2 text-xs font-semibold text-[#6d5dfc]">來源 · 02:15</button></div></section><section><h2 className="mb-3 text-lg font-bold">行動項目</h2><div className="divide-y rounded-xl border">{[["將訪談主題整理成新手引導檢核表","Mia · 截止日：10 月 10 日 · 來源：03:02"],["定義 V1 工作區的成功指標","Jay · 截止日：10 月 8 日 · 來源：01:07"]].map(x=><div className="flex gap-3 p-4" key={x[0]}><input type="checkbox"/><div className="flex-1"><b className="text-sm">{x[0]}</b><p className="text-xs text-slate-400">{x[1]}</p></div><span className="h-fit rounded bg-amber-50 px-2 py-1 text-xs text-amber-700">待處理</span></div>)}</div></section></article>}
-function SearchPage({q,setQ,setPage}:any){let r=meetings.filter(x=>!q||x.t.toLowerCase().includes(q.toLowerCase())||x.tags.toLowerCase().includes(q.toLowerCase()));return <div className="mx-auto max-w-3xl px-6 py-10"><h1 className="text-3xl font-bold">Search your workspace</h1><label className="mt-7 flex gap-3 rounded-xl border border-[#cfcafc] bg-white px-4 py-3"><Search className="text-[#6d5dfc]"/><input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Search titles, transcript, notes, people or tags" className="w-full outline-none"/></label><p className="mt-7 text-sm text-slate-500">{q?`${r.length} results for “${q}”`:"Search across every recording"}</p><div className="mt-3 space-y-2">{r.map(x=><button onClick={()=>setPage("work")} key={x.t} className="w-full rounded-xl border bg-white p-4 text-left"><b>{x.t}</b><p className="mt-1 text-sm text-slate-500">{x.k} · {x.d} · <span className="text-[#6d5dfc]">Transcript match at 02:15</span></p></button>)}</div></div>}
-function Set(){return <div className="mx-auto max-w-3xl px-6 py-10"><p className="text-sm font-bold text-[#6d5dfc]">WORKSPACE</p><h1 className="mt-2 text-3xl font-bold">Settings</h1><div className="mt-8 space-y-3">{[["Profile","Jay Lin · jay@memo.ai"],["AI preferences","Meeting Notes is your default template"],["Transcription","English (US) · Speaker detection enabled"],["Integrations","Calendar and cloud storage are ready to connect"]].map(x=><button key={x[0]} className="flex w-full justify-between rounded-xl border bg-white p-5 text-left"><span><b>{x[0]}</b><small className="mt-1 block text-slate-500">{x[1]}</small></span><ChevronDown className="-rotate-90 text-slate-400"/></button>)}</div></div>}
+
+import { useEffect, useRef, useState } from "react";
+import { Check, CircleStop, FileAudio, Mic, Pause, Play, Sparkles } from "lucide-react";
+
+type Segment = { start: number; end: number; speaker: string; text: string };
+
+const formatTime = (total: number) => {
+  const minutes = Math.floor(total / 60).toString().padStart(2, "0");
+  const seconds = Math.floor(total % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+};
+
+const toTranscriptText = (segments: Segment[]) =>
+  segments.map((segment) => `[${formatTime(segment.start)}] ${segment.speaker}：${segment.text}`).join("\n");
+
+export default function Home() {
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const animationRef = useRef<number | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const [recording, setRecording] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [seconds, setSeconds] = useState(0);
+  const [levels, setLevels] = useState<number[]>(Array(44).fill(8));
+  const [audio, setAudio] = useState<{ blob: Blob; url: string } | null>(null);
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [notes, setNotes] = useState("");
+  const [title, setTitle] = useState("未命名會議");
+  const [status, setStatus] = useState("準備好後，按下「開始錄音」。");
+  const [error, setError] = useState("");
+  const [transcribing, setTranscribing] = useState(false);
+  const [generating, setGenerating] = useState(false);
+
+  useEffect(() => {
+    if (!recording || paused) return;
+    const timer = window.setInterval(() => setSeconds((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [recording, paused]);
+
+  useEffect(() => () => {
+    if (audio?.url) URL.revokeObjectURL(audio.url);
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    void audioContextRef.current?.close();
+  }, [audio?.url]);
+
+  const stopMeter = () => {
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    animationRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    void audioContextRef.current?.close();
+    audioContextRef.current = null;
+    setLevels(Array(44).fill(8));
+  };
+
+  const startMeter = (stream: MediaStream) => {
+    const context = new AudioContext();
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 256;
+    context.createMediaStreamSource(stream).connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const draw = () => {
+      analyser.getByteFrequencyData(data);
+      const next = Array.from({ length: 44 }, (_, index) => {
+        const offset = Math.floor((index / 44) * data.length);
+        return Math.max(6, Math.min(58, Math.round(data[offset] / 4)));
+      });
+      setLevels(next);
+      animationRef.current = requestAnimationFrame(draw);
+    };
+    audioContextRef.current = context;
+    void context.resume();
+    draw();
+  };
+
+  const startRecording = async () => {
+    setError("");
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setError("此瀏覽器不支援錄音。請使用最新版 Chrome、Edge 或 Safari。");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : undefined;
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        setAudio((current) => {
+          if (current?.url) URL.revokeObjectURL(current.url);
+          return { blob, url: URL.createObjectURL(blob) };
+        });
+        stopMeter();
+        setStatus("錄音已儲存於此工作區。可先手動寫筆記，或將錄音轉為逐字稿。");
+      };
+      streamRef.current = stream;
+      recorderRef.current = recorder;
+      startMeter(stream);
+      recorder.start(1000);
+      setSeconds(0);
+      setAudio(null);
+      setSegments([]);
+      setRecording(true);
+      setPaused(false);
+      setStatus("正在使用麥克風錄音；你可以同時在下方撰寫會議筆記。");
+    } catch {
+      setError("無法取得麥克風權限。請在瀏覽器網址列的網站權限中允許麥克風後重試。");
+    }
+  };
+
+  const togglePause = () => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    if (recorder.state === "recording") { recorder.pause(); setPaused(true); setStatus("錄音已暫停。"); }
+    else if (recorder.state === "paused") { recorder.resume(); setPaused(false); setStatus("已繼續錄音。"); }
+  };
+
+  const finishRecording = () => {
+    if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
+    setRecording(false);
+    setPaused(false);
+  };
+
+  const transcribe = async () => {
+    if (!audio) return;
+    setTranscribing(true); setError(""); setStatus("正在將你的錄音送往轉錄服務…");
+    try {
+      const form = new FormData();
+      form.append("audio", new File([audio.blob], "memo-recording.webm", { type: audio.blob.type || "audio/webm" }));
+      const response = await fetch("/api/transcribe", { method: "POST", body: form });
+      const data = await response.json() as { error?: string; transcript?: Segment[] };
+      if (!response.ok) throw new Error(data.error || "轉錄失敗");
+      const realSegments = data.transcript || [];
+      setSegments(realSegments);
+      setStatus(realSegments.length ? "逐字稿已完成，現在可以依據它生成會議紀錄。" : "未辨識到語音內容，請確認錄音中有清楚的人聲。");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "轉錄失敗，請再試一次。"); }
+    finally { setTranscribing(false); }
+  };
+
+  const generateNotes = async () => {
+    if (!segments.length) return;
+    setGenerating(true); setError(""); setStatus("AI 正在依據實際逐字稿整理會議紀錄…");
+    try {
+      const response = await fetch("/api/ai-notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transcript: toTranscriptText(segments) }) });
+      const data = await response.json() as { error?: string; notes?: string };
+      if (!response.ok) throw new Error(data.error || "產生失敗");
+      setNotes(data.notes || "");
+      setStatus("AI 會議紀錄已產生；你可以繼續直接編輯。 ");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "產生會議紀錄失敗，請再試一次。"); }
+    finally { setGenerating(false); }
+  };
+
+  return <main className="min-h-screen bg-[#f7f7f5] text-[#292928]">
+    <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-[#e7e7e2] bg-[#f7f7f5]/95 px-5 backdrop-blur">
+      <div className="flex items-center gap-2 font-semibold"><span className="grid h-7 w-7 place-items-center rounded-md bg-[#6f5cff] text-sm text-white">m</span> Memo AI</div>
+      <span className="text-sm text-[#75756f]">私人工作區</span>
+    </header>
+    <section className="mx-auto max-w-4xl px-5 py-12 md:px-10">
+      <input aria-label="會議標題" value={title} onChange={(event) => setTitle(event.target.value)} className="w-full border-0 bg-transparent text-4xl font-bold outline-none placeholder:text-[#b7b7b1]" placeholder="未命名會議" />
+      <p className="mt-2 text-sm text-[#85857d]">今天 · 本頁中的錄音、筆記與逐字稿皆來自這一次會議。</p>
+
+      <section className="mt-8 overflow-hidden rounded-xl border border-[#e1e1db] bg-white shadow-sm">
+        <div className="flex flex-wrap items-center gap-3 border-b border-[#ecece7] px-5 py-4">
+          <div className="flex items-center gap-2 text-sm font-medium"><Mic className="h-4 w-4 text-[#6f5cff]" /> 即時錄音</div>
+          <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${recording ? "bg-red-50 text-red-600" : "bg-[#f1f1ed] text-[#77776f]"}`}>{recording ? (paused ? "已暫停" : "錄音中") : audio ? "已儲存" : "尚未錄音"}</span>
+          <span className="ml-auto font-mono text-sm text-[#5e5e58]">{formatTime(seconds)}</span>
+        </div>
+        <div className="px-5 py-6">
+          <div className="flex h-16 items-center gap-1 overflow-hidden rounded-lg bg-[#fafaf8] px-4" aria-label="即時音量波形">
+            {levels.map((level, index) => <span key={index} className="w-1 flex-1 rounded-full bg-[#8c7cff] transition-[height] duration-75" style={{ height: `${level}px`, opacity: recording ? 1 : 0.35 }} />)}
+          </div>
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            {!recording ? <button onClick={startRecording} className="inline-flex items-center gap-2 rounded-md bg-[#292928] px-4 py-2.5 text-sm font-medium text-white"><Mic className="h-4 w-4" />開始錄音</button> : <>
+              <button onClick={togglePause} className="inline-flex items-center gap-2 rounded-md border border-[#dddcd5] px-4 py-2.5 text-sm font-medium"><Pause className="h-4 w-4" />{paused ? "繼續錄音" : "暫停"}</button>
+              <button onClick={finishRecording} className="inline-flex items-center gap-2 rounded-md bg-red-50 px-4 py-2.5 text-sm font-medium text-red-700"><CircleStop className="h-4 w-4" />停止並儲存</button>
+            </>}
+            {audio && !recording && <button disabled={transcribing} onClick={transcribe} className="inline-flex items-center gap-2 rounded-md border border-[#6f5cff] px-4 py-2.5 text-sm font-medium text-[#5c4ded] disabled:opacity-50"><FileAudio className="h-4 w-4" />{transcribing ? "轉錄中…" : "產生逐字稿"}</button>}
+            <span className="text-sm text-[#787871]">{status}</span>
+          </div>
+          {audio && <audio className="mt-5 w-full" controls src={audio.url}>你的瀏覽器不支援音訊播放。</audio>}
+          {error && <p className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+        </div>
+      </section>
+
+      <section className="mt-10 border-t border-[#e5e5df] pt-8">
+        <div className="mb-4 flex flex-wrap items-center gap-3"><h2 className="text-xl font-semibold">會議筆記</h2><span className="text-sm text-[#85857d]">在錄音期間即可同步輸入，停止後也可繼續編輯。</span><button disabled={!segments.length || generating} onClick={generateNotes} className="ml-auto inline-flex items-center gap-2 rounded-md bg-[#6f5cff] px-4 py-2.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"><Sparkles className="h-4 w-4" />{generating ? "整理中…" : "一鍵生成會議紀錄"}</button></div>
+        <textarea value={notes} onChange={(event) => setNotes(event.target.value)} className="min-h-[300px] w-full resize-y rounded-lg border border-[#e2e2dc] bg-white p-5 leading-7 outline-none focus:border-[#8c7cff] focus:ring-2 focus:ring-[#e8e5ff]" placeholder="在這裡開始記錄會議內容…" />
+      </section>
+
+      {segments.length > 0 && <section className="mt-10 border-t border-[#e5e5df] pt-8"><h2 className="mb-4 text-xl font-semibold">實際逐字稿</h2><div className="space-y-3">{segments.map((segment, index) => <article key={`${segment.start}-${index}`} className="rounded-lg border border-[#e6e6e0] bg-white p-4"><div className="mb-2 flex items-center gap-3 text-sm"><span className="font-mono text-[#6f5cff]">{formatTime(segment.start)}</span><span className="font-medium">{segment.speaker}</span><Check className="ml-auto h-4 w-4 text-[#7c7c75]" /></div><p className="leading-7 text-[#4f4f49]">{segment.text}</p></article>)}</div></section>}
+    </section>
+  </main>;
+}
