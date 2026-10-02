@@ -1,246 +1,78 @@
 "use client";
 
-import { ChangeEvent, useEffect, useRef, useState } from "react";
-import { ChevronDown, CircleStop, Code2, FileAudio, Folder, GripVertical, ImagePlus, LayoutList, ListChecks, ListOrdered, Mic, Pause, Plus, Quote, Search, Sparkles, Table2, Type } from "lucide-react";
+import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
+import { AudioLines, ChevronDown, CircleStop, FileAudio, Folder, GripVertical, ImagePlus, LayoutList, ListChecks, ListOrdered, Mic, Pause, Plus, Quote, Search, Sparkles, Table2, Type } from "lucide-react";
 
 type Segment = { start: number; end: number; speaker: string; text: string };
-type AudioAsset = { blob: Blob; url: string };
-type ImageAsset = { file: File; url: string; name: string };
-type ImageMenu = { x: number; y: number } | null;
-type Mode = "home" | "page";
-
-const formatTime = (seconds: number) => `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
-const transcriptText = (items: Segment[]) => items.map((item) => `[${formatTime(item.start)}] ${item.speaker}：${item.text}`).join("\n");
+type Tab = "notes" | "transcript" | "summary";
+type Menu = "none" | "insert" | "block" | "image";
+const fmt = (n: number) => `${Math.floor(n / 60).toString().padStart(2, "0")}:${Math.floor(n % 60).toString().padStart(2, "0")}`;
 
 export default function Home() {
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const animationRef = useRef<number | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const editorRef = useRef<HTMLDivElement | null>(null);
-  const imageInputRef = useRef<HTMLInputElement | null>(null);
-  const selectionRef = useRef<Range | null>(null);
-  const [mode, setMode] = useState<Mode>("home");
-  const [title, setTitle] = useState("未命名頁面");
-  const [recording, setRecording] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const [seconds, setSeconds] = useState(0);
-  const [levels, setLevels] = useState<number[]>(Array(34).fill(5));
-  const [audio, setAudio] = useState<AudioAsset | null>(null);
-  const [segments, setSegments] = useState<Segment[]>([]);
-  const [image, setImage] = useState<ImageAsset | null>(null);
-  const [status, setStatus] = useState("");
-  const [error, setError] = useState("");
-  const [transcribing, setTranscribing] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [ocrLoading, setOcrLoading] = useState(false);
-  const [slashOpen, setSlashOpen] = useState(false);
-  const [imageMenu, setImageMenu] = useState<ImageMenu>(null);
-  const [emoji, setEmoji] = useState("📄");
-  const [emojiOpen, setEmojiOpen] = useState(false);
-  const [lastEdited, setLastEdited] = useState(new Date());
+  const editor = useRef<HTMLDivElement>(null), selection = useRef<Range | null>(null), imageInput = useRef<HTMLInputElement>(null);
+  const recorder = useRef<MediaRecorder | null>(null), stream = useRef<MediaStream | null>(null), context = useRef<AudioContext | null>(null), frame = useRef<number | null>(null), chunks = useRef<Blob[]>([]), images = useRef(new Map<string, File>());
+  const [tab, setTab] = useState<Tab>("notes"), [title, setTitle] = useState("未命名筆記"), [emoji, setEmoji] = useState("📄"), [edited, setEdited] = useState(new Date());
+  const [recording, setRecording] = useState(false), [paused, setPaused] = useState(false), [seconds, setSeconds] = useState(0), [levels, setLevels] = useState<number[]>(Array(34).fill(6)), [audio, setAudio] = useState<{ blob: Blob; url: string } | null>(null);
+  const [segments, setSegments] = useState<Segment[]>([]), [summary, setSummary] = useState(""), [menu, setMenu] = useState<Menu>("none"), [menuAt, setMenuAt] = useState({ x: 150, y: 180 }), [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [transcribing, setTranscribing] = useState(false), [generating, setGenerating] = useState(false), [ocr, setOcr] = useState(false), [error, setError] = useState(""), [status, setStatus] = useState("可直接寫筆記；需要時再開始錄音。");
 
-  useEffect(() => {
-    if (!recording || paused) return;
-    const timer = window.setInterval(() => setSeconds((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [recording, paused]);
+  useEffect(() => { if (!recording || paused) return; const id = setInterval(() => setSeconds((v) => v + 1), 1000); return () => clearInterval(id); }, [recording, paused]);
+  useEffect(() => { const close = () => setMenu("none"); document.addEventListener("mousedown", close); window.addEventListener("scroll", close, true); return () => { document.removeEventListener("mousedown", close); window.removeEventListener("scroll", close, true); }; }, []);
+  useEffect(() => () => { stream.current?.getTracks().forEach((x) => x.stop()); if (frame.current) cancelAnimationFrame(frame.current); void context.current?.close(); if (audio) URL.revokeObjectURL(audio.url); }, [audio]);
 
-  useEffect(() => () => {
-    if (audio) URL.revokeObjectURL(audio.url);
-    if (image) URL.revokeObjectURL(image.url);
-    if (animationRef.current) cancelAnimationFrame(animationRef.current);
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    void audioContextRef.current?.close();
-  }, [audio, image]);
+  const remember = () => { const s = window.getSelection(); if (s?.rangeCount && editor.current?.contains(s.anchorNode)) selection.current = s.getRangeAt(0).cloneRange(); };
+  const closeAudio = () => { if (frame.current) cancelAnimationFrame(frame.current); stream.current?.getTracks().forEach((x) => x.stop()); void context.current?.close(); context.current = null; setLevels(Array(34).fill(6)); };
+  const insert = (html: string) => { const s = window.getSelection(); editor.current?.focus(); if (selection.current && s) { s.removeAllRanges(); s.addRange(selection.current); } document.execCommand("insertHTML", false, html); setMenu("none"); setEdited(new Date()); };
+  const table = () => insert('<table><tbody><tr><th>欄位一</th><th>欄位二</th><th>欄位三</th></tr><tr><td>內容</td><td>內容</td><td>內容</td></tr><tr><td>內容</td><td>內容</td><td>內容</td></tr></tbody></table><p><br></p>');
+  const showMenu = (kind: Menu, x?: number, y?: number) => { remember(); const r = selection.current?.getBoundingClientRect(); setMenuAt({ x: x ?? r?.left ?? 160, y: y ?? r?.bottom ?? 230 }); setMenu(kind); };
 
-  useEffect(() => {
-    const closeMenu = () => setImageMenu(null);
-    window.addEventListener("scroll", closeMenu, true);
-    document.addEventListener("mousedown", closeMenu);
-    return () => { window.removeEventListener("scroll", closeMenu, true); document.removeEventListener("mousedown", closeMenu); };
-  }, []);
-
-  useEffect(() => {
-    editorRef.current?.querySelectorAll('img[data-memo-image="active"]').forEach((item) => item.classList.toggle("memo-image-selected", Boolean(imageMenu) || ocrLoading));
-  }, [imageMenu, ocrLoading]);
-
-  const stopMeter = () => {
-    if (animationRef.current) cancelAnimationFrame(animationRef.current);
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    void audioContextRef.current?.close();
-    audioContextRef.current = null;
-    setLevels(Array(34).fill(5));
-  };
-
-  const startMeter = (stream: MediaStream) => {
-    const context = new AudioContext();
-    const analyser = context.createAnalyser();
-    analyser.fftSize = 256;
-    context.createMediaStreamSource(stream).connect(analyser);
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    const draw = () => {
-      analyser.getByteFrequencyData(data);
-      setLevels(Array.from({ length: 34 }, (_, index) => Math.max(5, Math.min(42, Math.round(data[Math.floor(index * data.length / 34)] / 5)))));
-      animationRef.current = requestAnimationFrame(draw);
-    };
-    audioContextRef.current = context;
-    void context.resume();
-    draw();
-  };
-
-  const beginPage = (nextTitle = "未命名頁面") => { setTitle(nextTitle); setMode("page"); setStatus(""); setError(""); };
-  const rememberSelection = () => {
-    const selection = window.getSelection();
-    if (selection?.rangeCount && editorRef.current?.contains(selection.anchorNode)) selectionRef.current = selection.getRangeAt(0).cloneRange();
-  };
-  const insertHtml = (html: string) => {
-    editorRef.current?.focus();
-    const selection = window.getSelection();
-    if (selectionRef.current && selection) { selection.removeAllRanges(); selection.addRange(selectionRef.current); }
-    document.execCommand("insertHTML", false, html);
-    setLastEdited(new Date());
-    setSlashOpen(false);
-  };
-  const insertTable = () => insertHtml('<table><tbody><tr><th>欄位一</th><th>欄位二</th><th>欄位三</th></tr><tr><td>內容</td><td>內容</td><td>內容</td></tr><tr><td>內容</td><td>內容</td><td>內容</td></tr></tbody></table><p><br></p>');
-
-  const startRecording = async () => {
+  const start = async () => {
     setError("");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : undefined;
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      chunksRef.current = [];
-      recorder.ondataavailable = ({ data }) => { if (data.size) chunksRef.current.push(data); };
-      recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
-        setAudio((current) => { if (current) URL.revokeObjectURL(current.url); return { blob, url: URL.createObjectURL(blob) }; });
-        stopMeter(); setStatus("錄音已儲存。你可以立即繼續寫筆記，或轉成逐字稿。");
-      };
-      streamRef.current = stream; recorderRef.current = recorder; startMeter(stream); recorder.start(1000);
-      setSeconds(0); setSegments([]); setRecording(true); setPaused(false); setStatus("正在錄音；筆記畫布仍可同步編輯。");
-    } catch { setError("無法使用麥克風。請在瀏覽器網站權限中允許麥克風後重試。"); }
+      const source = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : undefined;
+      const media = new MediaRecorder(source, mime ? { mimeType: mime } : undefined); chunks.current = [];
+      media.ondataavailable = ({ data }) => { if (data.size) chunks.current.push(data); };
+      media.onstop = () => { const blob = new Blob(chunks.current, { type: media.mimeType || "audio/webm" }); setAudio({ blob, url: URL.createObjectURL(blob) }); closeAudio(); setStatus("錄音已儲存。下一步可產生逐字稿。 "); };
+      const ac = new AudioContext(), analyser = ac.createAnalyser(); analyser.fftSize = 256; ac.createMediaStreamSource(source).connect(analyser); const data = new Uint8Array(analyser.frequencyBinCount);
+      const draw = () => { analyser.getByteFrequencyData(data); setLevels(Array.from({ length: 34 }, (_, i) => Math.max(5, Math.min(44, data[Math.floor(i * data.length / 34)] / 5)))); frame.current = requestAnimationFrame(draw); };
+      stream.current = source; context.current = ac; recorder.current = media; media.start(1000); void ac.resume(); draw(); setSeconds(0); setSegments([]); setSummary(""); setRecording(true); setPaused(false); setStatus("錄音中；可切換筆記分頁同步記錄。");
+    } catch { setError("無法使用麥克風，請在瀏覽器網站權限中允許麥克風。 "); }
   };
+  const pause = () => { const media = recorder.current; if (!media) return; if (media.state === "recording") { media.pause(); setPaused(true); } else { media.resume(); setPaused(false); } };
+  const stop = () => { const media = recorder.current; if (media && media.state !== "inactive") media.stop(); setRecording(false); setPaused(false); };
+  const transcribe = async () => { if (!audio) return; setTranscribing(true); setError(""); try { const body = new FormData(); body.append("audio", new File([audio.blob], "memo-recording.webm", { type: audio.blob.type || "audio/webm" })); const res = await fetch("/api/transcribe", { method: "POST", body }); const data = await res.json() as { error?: string; transcript?: Segment[] }; if (!res.ok) throw new Error(data.error || "轉錄失敗"); setSegments(data.transcript || []); setTab("transcript"); setStatus(data.transcript?.length ? "逐字稿完成，請確認後生成會議總結。" : "沒有辨識到語音內容。"); } catch (e) { setError(e instanceof Error ? e.message : "轉錄失敗。 "); } finally { setTranscribing(false); } };
+  const summarize = async () => { if (!segments.length) return; setGenerating(true); setError(""); try { const transcript = segments.map((x) => `[${fmt(x.start)}] ${x.speaker}：${x.text}`).join("\n"); const res = await fetch("/api/ai-notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transcript }) }); const data = await res.json() as { error?: string; notes?: string }; if (!res.ok || !data.notes) throw new Error(data.error || "AI 沒有回傳筆記內容。"); setSummary(data.notes); setTab("summary"); setStatus("AI 已依據逐字稿生成會議總結。 "); } catch (e) { setError(e instanceof Error ? e.message : "AI 生成失敗。 "); } finally { setGenerating(false); } };
 
-  const togglePause = () => {
-    const recorder = recorderRef.current;
-    if (!recorder) return;
-    if (recorder.state === "recording") { recorder.pause(); setPaused(true); }
-    if (recorder.state === "paused") { recorder.resume(); setPaused(false); }
-  };
+  const addImage = async (file: File, range?: Range | null) => { if (!file.type.startsWith("image/") && !/\.hei[cf]$/i.test(file.name)) return setError("請上傳圖片檔。 "); const id = crypto.randomUUID(); images.current.set(id, file); let url = URL.createObjectURL(file); if (/\.hei[cf]$/i.test(file.name) || file.type === "image/heic") try { const body = new FormData(); body.append("image", file); const res = await fetch("/api/image-preview", { method: "POST", body }); const data = await res.json() as { dataUrl?: string }; if (data.dataUrl) url = data.dataUrl; } catch { setStatus("HEIC 圖片無法預覽時，仍可右鍵執行文字辨識。 "); } const html = `<figure data-image-id="${id}" contenteditable="false" style="margin:16px 0"><img src="${url}" alt="${file.name}" style="display:block;max-width:100%;max-height:680px;border-radius:8px;cursor:context-menu" /><figcaption style="margin-top:6px;color:#999;font-size:12px">${file.name}</figcaption></figure><p><br></p>`; if (range) { const holder = document.createElement("div"); holder.innerHTML = html; range.deleteContents(); range.insertNode(holder); } else insert(html); setEdited(new Date()); };
+  const choose = (e: ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) void addImage(file); e.target.value = ""; };
+  const drop = (e: DragEvent<HTMLDivElement>) => { e.preventDefault(); const file = Array.from(e.dataTransfer.files).find((x) => x.type.startsWith("image/") || /\.hei[cf]$/i.test(x.name)); if (!file) return; const doc = document as Document & { caretRangeFromPoint?: (x: number, y: number) => Range }; void addImage(file, doc.caretRangeFromPoint?.(e.clientX, e.clientY) || selection.current); };
+  const extract = async () => { if (!selectedImage) return; const file = images.current.get(selectedImage); if (!file) return; setOcr(true); setMenu("none"); setError(""); try { const body = new FormData(); body.append("image", file); const res = await fetch("/api/ocr", { method: "POST", body }); const data = await res.json() as { error?: string; text?: string }; if (!res.ok || !data.text) throw new Error(data.error || "圖片文字辨識失敗"); const figure = editor.current?.querySelector(`figure[data-image-id="${selectedImage}"]`); if (figure) figure.outerHTML = htmlFromText(data.text); setStatus("圖片已轉換為可編輯文字。 "); setEdited(new Date()); } catch (e) { setError(e instanceof Error ? e.message : "圖片文字辨識失敗。 "); } finally { setOcr(false); setSelectedImage(null); } };
 
-  const stopRecording = () => {
-    if (recorderRef.current?.state !== "inactive") recorderRef.current?.stop();
-    setRecording(false); setPaused(false);
-  };
-
-  const transcribe = async () => {
-    if (!audio) return;
-    setTranscribing(true); setError(""); setStatus("正在轉錄你的錄音…");
-    try {
-      const form = new FormData();
-      form.append("audio", new File([audio.blob], "memo-recording.webm", { type: audio.blob.type || "audio/webm" }));
-      const response = await fetch("/api/transcribe", { method: "POST", body: form });
-      const data = await response.json() as { error?: string; transcript?: Segment[] };
-      if (!response.ok) throw new Error(data.error || "轉錄失敗");
-      setSegments(data.transcript || []); setStatus(data.transcript?.length ? "逐字稿完成。可以依錄音內容生成會議紀錄。" : "沒有辨識到可用語音內容。");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "轉錄失敗。"); }
-    finally { setTranscribing(false); }
-  };
-
-  const generateNotes = async () => {
-    if (!segments.length) { setError("請先用實際錄音產生逐字稿，再生成會議紀錄。"); return; }
-    setGenerating(true); setError("");
-    try {
-      const response = await fetch("/api/ai-notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transcript: transcriptText(segments) }) });
-      const data = await response.json() as { error?: string; notes?: string };
-      if (!response.ok) throw new Error(data.error || "AI 產生失敗");
-      if (editorRef.current) editorRef.current.innerText = data.notes || "";
-      setStatus("AI 已根據你的逐字稿建立會議紀錄，你可以繼續編修。");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "AI 產生失敗。"); }
-    finally { setGenerating(false); }
-  };
-
-  const selectImage = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]; if (!file) return;
-    const isHeic = file.type === "image/heic" || file.type === "image/heif" || /\.hei[cf]$/i.test(file.name);
-    let previewUrl = URL.createObjectURL(file);
-    if (isHeic) {
-      try {
-        const form = new FormData(); form.append("image", file);
-        const response = await fetch("/api/image-preview", { method: "POST", body: form });
-        const data = await response.json() as { dataUrl?: string };
-        if (!response.ok || !data.dataUrl) throw new Error();
-        URL.revokeObjectURL(previewUrl); previewUrl = data.dataUrl;
-      } catch { setStatus("此 HEIC 圖片目前無法在瀏覽器完整預覽，但仍可在圖片上按右鍵進行文字辨識。"); }
-    }
-    setImage((current) => { if (current) URL.revokeObjectURL(current.url); return { file, url: previewUrl, name: file.name }; });
-    event.target.value = "";
-  };
-
-  const extractImageText = async () => {
-    if (!image) return;
-    setOcrLoading(true); setError("");
-    try {
-      const form = new FormData(); form.append("image", image.file);
-      const response = await fetch("/api/ocr", { method: "POST", body: form });
-      const data = await response.json() as { error?: string; text?: string };
-      if (!response.ok) throw new Error(data.error || "辨識失敗");
-      insertHtml(`<p>${(data.text || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\n", "<br>")}</p>`);
-      setStatus("圖片文字已插入畫布，可直接編輯。");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "圖片文字辨識失敗。"); }
-    finally { setOcrLoading(false); }
-  };
-
-  if (mode === "home") return <main className="flex min-h-screen bg-white text-[#2f2f2f]">
-    <Sidebar onNew={() => beginPage()} />
-    <section className="flex min-w-0 flex-1 items-center justify-center p-8"><div className="max-w-xl text-center"><div className="mx-auto mb-5 grid h-14 w-14 place-items-center rounded-2xl bg-[#f0edff] text-[#715df2]"><LayoutList /></div><h1 className="text-3xl font-semibold">你的工作區是空白的</h1><p className="mt-3 leading-7 text-[#777771]">從一頁筆記開始、錄下會議，或將圖片轉成可編輯的文字。所有內容都會在同一張白色畫布中完成。</p><div className="mt-8 flex flex-wrap justify-center gap-3"><button onClick={() => beginPage("未命名筆記")} className="rounded-md bg-[#2f2f2f] px-4 py-2.5 text-sm font-medium text-white"><Plus className="mr-1 inline h-4 w-4" />建立空白筆記</button><button onClick={() => beginPage("未命名會議")} className="rounded-md border border-[#deded8] px-4 py-2.5 text-sm font-medium"><Mic className="mr-1 inline h-4 w-4" />建立錄音頁</button></div></div></section>
-  </main>;
-
-  return <main className="flex min-h-screen bg-white text-[#2f2f2f]"><Sidebar onNew={() => beginPage()} />
-    <section className="min-w-0 flex-1 overflow-auto"><header className="flex h-14 items-center border-b border-[#ebebe6] px-6 text-sm text-[#73736d]"><button onClick={() => setMode("home")} className="hover:text-[#2f2f2f]">所有筆記</button><span className="mx-2">/</span><span>{title}</span></header>
-      <div className="mx-auto max-w-4xl px-7 py-9 md:px-14"><div className="relative mb-3"><button onClick={() => setEmojiOpen((value) => !value)} className="grid h-12 w-12 place-items-center rounded-lg text-3xl hover:bg-[#f5f5f1]" aria-label="變更頁面圖示">{emoji}</button>{emojiOpen && <div className="absolute top-13 z-20 flex gap-1 rounded-lg border border-[#e1e1db] bg-white p-2 shadow-lg">{["📄", "📝", "💡", "🎯", "📌", "🎙️", "📚", "✨"].map((item) => <button key={item} onClick={() => { setEmoji(item); setEmojiOpen(false); setLastEdited(new Date()); }} className="grid h-8 w-8 place-items-center rounded hover:bg-[#f1f0ff]">{item}</button>)}</div>}</div><input value={title} onChange={(event) => { setTitle(event.target.value); setLastEdited(new Date()); }} className="w-full border-0 bg-transparent text-4xl font-bold outline-none placeholder:text-[#b4b4ae]" placeholder="未命名頁面" />
-        <p className="mt-2 text-sm text-[#999991]">上次編輯：{lastEdited.toLocaleDateString("zh-TW", { month: "long", day: "numeric" })} {lastEdited.toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" })} · 私人頁面</p>
-        <section className="mt-7 rounded-lg border border-[#e8e8e3] bg-white">
-          <div className="flex min-h-12 flex-wrap items-center gap-3 border-b border-[#eeeeea] px-4 py-2"><div className="flex items-center gap-2 text-sm font-medium"><Mic className="h-4 w-4 text-[#715df2]" />錄音</div><span className="rounded-full bg-[#f3f3ef] px-2 py-1 text-xs text-[#777770]">{recording ? (paused ? "已暫停" : "錄音中") : audio ? "已儲存" : "可選擇啟用"}</span><span className="ml-auto font-mono text-sm">{formatTime(seconds)}</span></div>
-          <div className="px-4 py-3"><div className="flex h-9 items-center gap-1 overflow-hidden rounded bg-[#fafaf8] px-3">{levels.map((level, index) => <span key={index} className="w-1 flex-1 rounded-full bg-[#917fff] transition-[height] duration-75" style={{ height: `${level}px`, opacity: recording ? 1 : .28 }} />)}</div>
-          <div className="mt-3 flex flex-wrap items-center gap-2">{!recording ? <button onClick={startRecording} className="rounded-md bg-[#2f2f2f] px-3 py-2 text-sm text-white"><Mic className="mr-1 inline h-4 w-4" />開始錄音</button> : <><button onClick={togglePause} className="rounded-md border border-[#deded8] px-3 py-2 text-sm"><Pause className="mr-1 inline h-4 w-4" />{paused ? "繼續" : "暫停"}</button><button onClick={stopRecording} className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700"><CircleStop className="mr-1 inline h-4 w-4" />停止</button></>}{audio && !recording && <button disabled={transcribing} onClick={transcribe} className="rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb] disabled:opacity-50"><FileAudio className="mr-1 inline h-4 w-4" />{transcribing ? "轉錄中…" : "產生逐字稿"}</button>}<span className="text-xs text-[#85857e]">{status}</span></div>{audio && <audio className="mt-3 h-9 w-full" controls src={audio.url} />}</div>
+  return <main className="flex min-h-screen bg-white text-[#2f2f2f]" onDragOver={(e) => e.preventDefault()}><Sidebar /><section className="min-w-0 flex-1 overflow-auto"><header className="flex h-14 items-center border-b border-[#ebebe6] px-6 text-sm text-[#73736d]">所有頁面 <span className="mx-2">/</span> {title}</header><div className="mx-auto max-w-4xl px-10 py-9"><div className="flex items-center gap-3"><input value={emoji} onChange={(e) => setEmoji(e.target.value)} className="h-12 w-14 border-0 bg-transparent text-center text-3xl outline-none" title="點擊後按 Control + Command + Space 開啟系統 Emoji 選擇器" /><span className="text-xs text-[#999]">點擊圖示後按 ⌃⌘Space 使用系統 Emoji</span></div><input value={title} onChange={(e) => { setTitle(e.target.value); setEdited(new Date()); }} className="mt-3 w-full border-0 bg-transparent text-4xl font-bold outline-none" /><p className="mt-2 text-sm text-[#999]">上次編輯：{edited.toLocaleString("zh-TW", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })} · 私人頁面</p>
+      <Recorder recording={recording} paused={paused} audio={audio} seconds={seconds} levels={levels} transcribing={transcribing} status={status} onStart={start} onPause={pause} onStop={stop} onTranscribe={transcribe} />
+      <nav className="mt-7 flex items-center gap-1 border-b border-[#e9e9e4]"><Tab active={tab === "notes"} label="筆記" onClick={() => setTab("notes")} /><Tab active={tab === "transcript"} disabled={!segments.length} label={`逐字稿${segments.length ? ` (${segments.length})` : ""}`} onClick={() => setTab("transcript")} /><Tab active={tab === "summary"} disabled={!segments.length} label="AI 總結" onClick={() => setTab("summary")} />{tab === "transcript" && <button disabled={generating} onClick={summarize} className="ml-auto mb-2 rounded-md bg-[#715df2] px-3 py-2 text-sm text-white"><Sparkles className="mr-1 inline h-4 w-4" />{generating ? "生成中…" : "生成會議總結"}</button>}</nav>
+      {tab === "notes" && (
+        <section className="pt-5" onDrop={drop}>
+          <Toolbar onImage={() => imageInput.current?.click()} onTable={table} onInsert={insert} />
+          <div className="group relative pl-16">
+            <div className="absolute -left-1 top-3 hidden gap-1 group-hover:flex">
+              <button onMouseDown={(event) => event.preventDefault()} onClick={() => showMenu("insert")} className="grid h-7 w-7 place-items-center rounded text-[#888] hover:bg-[#f1f1ed]"><Plus className="h-4 w-4" /></button>
+              <button onMouseDown={(event) => event.preventDefault()} onClick={() => showMenu("block")} className="grid h-7 w-7 place-items-center rounded text-[#888] hover:bg-[#f1f1ed]"><GripVertical className="h-4 w-4" /></button>
+            </div>
+            <div ref={editor} contentEditable suppressContentEditableWarning onInput={() => { remember(); setEdited(new Date()); }} onKeyUp={remember} onMouseUp={remember} onKeyDown={(event) => { if (event.key === "/") showMenu("insert"); if (event.key === "Escape") setMenu("none"); }} onContextMenu={(event) => { const figure = (event.target as HTMLElement).closest("figure[data-image-id]"); if (figure) { event.preventDefault(); setSelectedImage(figure.getAttribute("data-image-id")); showMenu("image", event.clientX, event.clientY); } }} className="memo-editor min-h-[360px] py-5 outline-none" data-placeholder="輸入 / 可叫出區塊選單，或拖曳圖片到此處…" />
+          </div>
+          <input ref={imageInput} type="file" accept="image/*,.heic,.heif" className="hidden" onChange={choose} />
         </section>
-
-        <section className="mt-6"><div className="mb-2 flex flex-wrap items-center gap-2"><div className="flex rounded-md border border-[#e5e5df] bg-[#fafaf9] p-1"><ToolbarButton label="H1" onClick={() => insertHtml("<h1>標題</h1><p><br></p>")} /><ToolbarButton label="H2" onClick={() => insertHtml("<h2>小標題</h2><p><br></p>")} /><ToolbarButton label="H3" onClick={() => insertHtml("<h3>小節標題</h3><p><br></p>")} /><ToolbarButton label="• 清單" onClick={() => document.execCommand("insertUnorderedList")} /><ToolbarButton label="1. 清單" onClick={() => document.execCommand("insertOrderedList")} /><ToolbarButton label="✓ 待辦" onClick={() => insertHtml('<p>☐ 待辦事項</p>')} /><ToolbarButton label="引用" onClick={() => insertHtml("<blockquote>引用內容</blockquote><p><br></p>")} /><ToolbarButton label="表格" onClick={insertTable} icon={<Table2 className="h-3.5 w-3.5" />} /></div><button onClick={() => imageInputRef.current?.click()} className="inline-flex items-center gap-1 rounded-md border border-[#e5e5df] px-2.5 py-1.5 text-xs hover:bg-[#fafafa]"><ImagePlus className="h-3.5 w-3.5" />圖片</button><button disabled={!segments.length || generating} onClick={generateNotes} className="ml-auto inline-flex items-center gap-1 rounded-md bg-[#715df2] px-3 py-2 text-sm font-medium text-white disabled:opacity-40"><Sparkles className="h-4 w-4" />{generating ? "整理中…" : "AI 整理筆記"}</button></div>
-          <div className="group relative bg-white pl-10"><div className="absolute left-0 top-4 hidden items-center gap-1 group-hover:flex"><button title="新增區塊" onMouseDown={(event) => event.preventDefault()} onClick={() => setSlashOpen(true)} className="grid h-7 w-7 place-items-center rounded text-[#8b8b84] hover:bg-[#f1f1ed]"><Plus className="h-4 w-4" /></button><button title="區塊操作" onClick={() => setSlashOpen(true)} className="grid h-7 w-7 place-items-center rounded text-[#8b8b84] hover:bg-[#f1f1ed]"><GripVertical className="h-4 w-4" /></button></div><div ref={editorRef} contentEditable suppressContentEditableWarning onInput={(event) => { rememberSelection(); setLastEdited(new Date()); setSlashOpen((event.currentTarget.textContent || "").endsWith("/")); }} onKeyUp={rememberSelection} onMouseUp={rememberSelection} onContextMenu={(event) => { const target = event.target as HTMLElement; if (target instanceof HTMLImageElement && target.dataset.memoImage === "active") { event.preventDefault(); event.stopPropagation(); setImageMenu({ x: event.clientX, y: event.clientY }); } }} onKeyDown={(event) => { if (event.key === "/") setSlashOpen(true); if (event.key === "Escape") setSlashOpen(false); }} className="memo-editor min-h-[350px] py-5 outline-none" data-placeholder="輸入 / 可叫出區塊選單，或直接開始撰寫…" />{slashOpen && <div onMouseDown={(event) => event.stopPropagation()} className="absolute left-10 top-14 z-10 w-60 rounded-lg border border-[#ddd] bg-white p-2 shadow-xl"><p className="px-2 pb-1 text-xs text-[#888]">插入區塊</p><MenuButton icon={<Type />} label="文字" onClick={() => insertHtml("<p>文字</p>")} /><MenuButton icon={<Type />} label="標題 1" onClick={() => insertHtml("<h1>標題</h1><p><br></p>")} /><MenuButton icon={<ListChecks />} label="待辦清單" onClick={() => insertHtml("<p>☐ 待辦事項</p>")} /><MenuButton icon={<ListOrdered />} label="編號清單" onClick={() => document.execCommand("insertOrderedList")} /><MenuButton icon={<Quote />} label="引用" onClick={() => insertHtml("<blockquote>引用內容</blockquote><p><br></p>")} /><MenuButton icon={<Code2 />} label="程式碼" onClick={() => insertHtml("<pre><code>輸入程式碼</code></pre><p><br></p>")} /><MenuButton icon={<Table2 />} label="表格" onClick={insertTable} /><MenuButton icon={<ImagePlus />} label="圖片" onClick={() => { setSlashOpen(false); imageInputRef.current?.click(); }} /></div>}</div>
-          <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={selectImage} />
-          {imageMenu && <div onMouseDown={(event) => event.stopPropagation()} style={{ left: imageMenu.x, top: imageMenu.y }} className="fixed z-50 w-52 rounded-lg border border-[#deded8] bg-white p-1.5 shadow-xl"><button disabled={ocrLoading} onClick={() => { setImageMenu(null); void extractImageText(); }} className="flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm hover:bg-[#f4f3ff] disabled:opacity-50"><Sparkles className="h-4 w-4 text-[#715df2]" />{ocrLoading ? "AI 轉換中…" : "AI 轉換為文字"}</button></div>}
-          {ocrLoading && <div className="fixed bottom-7 right-7 z-50 flex items-center gap-2 rounded-full bg-[#292928] px-4 py-3 text-sm text-white shadow-xl"><span className="h-3 w-3 animate-pulse rounded-full bg-[#a99cff]" />AI 正在辨識圖片文字…</div>}
-          {error && <p className="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-        </section>
-        {segments.length > 0 && <section className="mt-8 border-t border-[#e9e9e4] pt-6"><h2 className="mb-3 text-lg font-semibold">逐字稿</h2><div className="space-y-2">{segments.map((segment, index) => <div key={`${segment.start}-${index}`} className="rounded-md border border-[#eeeeea] p-3 text-sm"><span className="mr-3 font-mono text-[#715df2]">{formatTime(segment.start)}</span><b>{segment.speaker}</b><p className="mt-1 pl-12 leading-6 text-[#575751]">{segment.text}</p></div>)}</div></section>}
-      </div>
-    </section>
-  </main>;
+      )}
+      {tab === "transcript" && <Transcript segments={segments} />}{tab === "summary" && <Summary value={summary} generating={generating} onChange={(value) => { setSummary(value); setEdited(new Date()); }} onGenerate={summarize} />}{menu !== "none" && <BlockMenu kind={menu} point={menuAt} onInsert={insert} onTable={table} onImage={() => imageInput.current?.click()} onOCR={extract} />}{ocr && <div className="fixed bottom-7 right-7 z-50 rounded-full bg-[#292928] px-4 py-3 text-sm text-white shadow-xl">AI 正在辨識圖片文字…</div>}{error && <p className="mt-4 rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}</div></section></main>;
 }
 
-function Sidebar({ onNew }: { onNew: () => void }) { return <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-[#e9e9e4] bg-[#fbfbfa] p-3"><div className="mb-7 flex items-center gap-2 px-2 pt-1 text-lg font-semibold"><span className="grid h-7 w-7 place-items-center rounded-md bg-[#715df2] text-sm text-white">m</span> Memo AI</div><button onClick={onNew} className="mb-3 flex items-center gap-2 rounded-md bg-[#715df2] px-3 py-2.5 text-sm font-medium text-white"><Plus className="h-4 w-4" />新增頁面</button><nav className="space-y-1 text-sm"><button className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-[#f0f0ed]"><LayoutList className="h-4 w-4" />所有頁面</button><button className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-[#f0f0ed]"><Search className="h-4 w-4" />搜尋</button></nav><div className="mt-7"><div className="mb-2 flex items-center justify-between px-2 text-xs font-medium text-[#999991]">私人資料夾 <Plus className="h-3.5 w-3.5" /></div><button className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-sm hover:bg-[#f0f0ed]"><Folder className="h-4 w-4 text-[#a59472]" />所有筆記</button></div><div className="mt-auto border-t border-[#e9e9e4] px-2 py-3 text-sm text-[#73736d]">Jay Lin <ChevronDown className="float-right mt-1 h-3.5 w-3.5" /></div></aside>; }
-function ToolbarButton({ label, onClick, icon }: { label: string; onClick: () => void; icon?: React.ReactNode }) { return <button onClick={onClick} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-white">{icon}{label}</button>; }
-function MenuButton({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) { return <button onClick={onClick} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-sm hover:bg-[#f4f3ff]">{icon}{label}</button>; }
-
-function formatRecognizedText(text: string) {
-  const escape = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-  let list: "ul" | "ol" | null = null;
-  const output: string[] = [];
-  const closeList = () => { if (list) output.push(`</${list}>`); list = null; };
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (!line) { closeList(); continue; }
-    const bullet = /^[-•●▪]\s+(.+)/.exec(line);
-    const ordered = /^\d+[.)、]\s+(.+)/.exec(line);
-    if (bullet || ordered) { const type = bullet ? "ul" : "ol"; if (list !== type) { closeList(); output.push(`<${type}>`); list = type; } output.push(`<li>${escape((bullet || ordered)![1])}</li>`); continue; }
-    closeList();
-    if (/^(#|【|［)/.test(line) || (line.length <= 28 && !/[，。；：,.]/.test(line))) output.push(`<h2>${escape(line.replace(/^#+\s*/, ""))}</h2>`);
-    else output.push(`<p>${escape(line)}</p>`);
-  }
-  closeList();
-  return output.join("") || `<p>${escape(text)}</p>`;
-}
+function Sidebar() { return <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-[#e9e9e4] bg-[#fbfbfa] p-3"><div className="mb-7 flex items-center gap-2 px-2 pt-1 text-lg font-semibold"><span className="grid h-7 w-7 place-items-center rounded-md bg-[#715df2] text-sm text-white">m</span>Memo AI</div><button className="mb-3 flex gap-2 rounded-md bg-[#715df2] px-3 py-2.5 text-sm text-white"><Plus className="h-4 w-4" />新增頁面</button><button className="flex gap-2 rounded px-2 py-2 text-sm"><LayoutList className="h-4 w-4" />所有頁面</button><button className="flex gap-2 rounded px-2 py-2 text-sm"><Search className="h-4 w-4" />搜尋</button><p className="mt-7 px-2 text-xs text-[#999]">私人資料夾</p><button className="mt-2 flex gap-2 px-2 text-sm"><Folder className="h-4 w-4" />所有筆記</button><div className="mt-auto border-t border-[#e9e9e4] px-2 py-3 text-sm text-[#73736d]">Jay Lin <ChevronDown className="float-right h-4 w-4" /></div></aside>; }
+function Recorder({ recording, paused, audio, seconds, levels, transcribing, status, onStart, onPause, onStop, onTranscribe }: { recording: boolean; paused: boolean; audio: { blob: Blob; url: string } | null; seconds: number; levels: number[]; transcribing: boolean; status: string; onStart: () => void; onPause: () => void; onStop: () => void; onTranscribe: () => void }) { return <section className="mt-7 rounded-lg border border-[#e8e8e3]"><div className="flex items-center gap-2 border-b border-[#eee] px-4 py-3"><AudioLines className="h-4 w-4 text-[#715df2]" /><b className="text-sm">會議錄音</b><span className="rounded-full bg-[#f3f3ef] px-2 py-1 text-xs">{recording ? (paused ? "已暫停" : "錄音中") : audio ? "已儲存" : "尚未開始"}</span><span className="ml-auto font-mono">{fmt(seconds)}</span></div><div className="px-4 py-3"><p className="text-sm text-[#74746f]">{status}</p>{recording && <div className="mt-3 flex h-9 items-center gap-1 rounded bg-[#fafaf8] px-3">{levels.map((v, i) => <span key={i} className="w-1 flex-1 rounded-full bg-[#917fff]" style={{ height: `${v}px` }} />)}</div>}<div className="mt-3 flex flex-wrap gap-2">{!recording && !audio && <button onClick={onStart} className="rounded-md bg-[#2f2f2f] px-3 py-2 text-sm text-white"><Mic className="mr-1 inline h-4 w-4" />開始錄音</button>}{recording && <><button onClick={onPause} className="rounded-md border px-3 py-2 text-sm"><Pause className="mr-1 inline h-4 w-4" />{paused ? "繼續" : "暫停"}</button><button onClick={onStop} className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700"><CircleStop className="mr-1 inline h-4 w-4" />停止並儲存</button></>}{audio && !recording && <button disabled={transcribing} onClick={onTranscribe} className="rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb]"><FileAudio className="mr-1 inline h-4 w-4" />{transcribing ? "轉錄中…" : "產生逐字稿"}</button>}</div>{audio && <audio className="mt-3 h-9 w-full" controls src={audio.url} />}</div></section>; }
+function Tab({ active, disabled, label, onClick }: { active: boolean; disabled?: boolean; label: string; onClick: () => void }) { return <button disabled={disabled} onClick={onClick} className={`border-b-2 px-3 py-2 text-sm ${active ? "border-[#715df2] text-[#604deb]" : "border-transparent text-[#777]"} disabled:opacity-40`}>{label}</button>; }
+function Toolbar({ onImage, onTable, onInsert }: { onImage: () => void; onTable: () => void; onInsert: (html: string) => void }) { return <div className="mb-2 flex flex-wrap gap-2"><div className="flex rounded-md border border-[#e5e5df] bg-[#fafaf9] p-1">{[["H1", "<h1>標題</h1><p><br></p>"], ["H2", "<h2>小標題</h2><p><br></p>"], ["待辦", "<p>☐ 待辦事項</p>"], ["引用", "<blockquote>引用內容</blockquote><p><br></p>"]].map(([label, html]) => <button key={label} onClick={() => onInsert(html)} className="px-2 py-1 text-xs">{label}</button>)}<button onClick={onTable} className="px-2 py-1 text-xs">表格</button></div><button onMouseDown={(e) => e.preventDefault()} onClick={onImage} className="rounded-md border border-[#e5e5df] px-2.5 py-1.5 text-xs"><ImagePlus className="mr-1 inline h-3.5 w-3.5" />圖片</button></div>; }
+function Transcript({ segments }: { segments: Segment[] }) { return <section className="py-6"><h2 className="mb-4 text-xl font-semibold">逐字稿</h2><div className="space-y-3">{segments.map((item, i) => <article key={`${item.start}-${i}`} className="flex gap-4 rounded-lg bg-[#fafaf9] p-4"><span className="font-mono text-sm text-[#715df2]">{fmt(item.start)}</span><div><b className="text-sm">{item.speaker}</b><p className="mt-1 leading-7 text-[#555]">{item.text}</p></div></article>)}</div></section>; }
+function Summary({ value, generating, onChange, onGenerate }: { value: string; generating: boolean; onChange: (value: string) => void; onGenerate: () => void }) { return <section className="py-6"><div className="mb-4 flex justify-between"><h2 className="text-xl font-semibold">會議總結</h2><button disabled={generating} onClick={onGenerate} className="rounded-md bg-[#715df2] px-3 py-2 text-sm text-white"><Sparkles className="mr-1 inline h-4 w-4" />{generating ? "生成中…" : "重新生成"}</button></div><textarea value={value} onChange={(e) => onChange(e.target.value)} className="min-h-[480px] w-full resize-y border-0 leading-7 outline-none" placeholder="請先在逐字稿分頁點選「生成會議總結」。" /></section>; }
+function BlockMenu({ kind, point, onInsert, onTable, onImage, onOCR }: { kind: Menu; point: { x: number; y: number }; onInsert: (html: string) => void; onTable: () => void; onImage: () => void; onOCR: () => void }) { const item = (label: string, click: () => void) => <button key={label} onClick={click} className="block w-full rounded px-2 py-2 text-left text-sm hover:bg-[#f4f3ff]">{label}</button>; return <div onMouseDown={(e) => e.stopPropagation()} style={{ left: point.x, top: point.y }} className="fixed z-50 w-56 rounded-lg border border-[#deded8] bg-white p-2 shadow-xl">{kind === "insert" && <><p className="px-2 text-xs text-[#888]">新增區塊</p>{item("文字", () => onInsert("<p>文字</p>"))}{item("待辦清單", () => onInsert("<p>☐ 待辦事項</p>"))}{item("引用", () => onInsert("<blockquote>引用內容</blockquote>"))}{item("表格", onTable)}{item("圖片", onImage)}</>}{kind === "block" && <><p className="px-2 text-xs text-[#888]">區塊操作</p>{item("轉換為標題", () => document.execCommand("formatBlock", false, "h2"))}{item("轉換為待辦", () => onInsert("<p>☐ 待辦事項</p>"))}{item("複製目前區塊", () => document.execCommand("copy"))}</>}{kind === "image" && item("✨ AI 轉換為文字", onOCR)}</div>; }
+function htmlFromText(text: string) { const esc = (v: string) => v.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); const out: string[] = []; let list = ""; const close = () => { if (list) out.push(`</${list}>`); list = ""; }; for (const raw of text.split("\n")) { const line = raw.trim(); if (!line) { close(); continue; } const bullet = /^[-•●]\s+(.+)/.exec(line), order = /^\d+[.)、]\s+(.+)/.exec(line); if (bullet || order) { const tag = bullet ? "ul" : "ol"; if (list !== tag) { close(); list = tag; out.push(`<${tag}>`); } out.push(`<li>${esc((bullet || order)![1])}</li>`); } else { close(); if (/^#{1,3}\s/.test(line)) { const level = Math.min(3, line.match(/^#+/)![0].length); out.push(`<h${level}>${esc(line.replace(/^#+\s*/, ""))}</h${level}>`); } else if (line.length < 32 && !/[，。；：,.]/.test(line)) out.push(`<h2>${esc(line)}</h2>`); else out.push(`<p>${esc(line)}</p>`); } } close(); return out.join(""); }

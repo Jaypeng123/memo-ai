@@ -17,16 +17,21 @@ export async function POST(request: Request) {
   if (!apiKey) {
     return Response.json({ error: "尚未設定 OPENAI_API_KEY。請在網站的伺服器環境變數中設定後再試。" }, { status: 503 });
   }
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
-      instructions: system,
-      input: `筆記模板：${template}\n\n逐字稿：\n${transcript}`
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: `筆記模板：${template}\n\n逐字稿：\n${transcript}` },
+      ],
     })
   });
   if (!response.ok) return Response.json({ error: "AI 產生失敗，請稍後再試。" }, { status: response.status });
-  const data = (await response.json()) as { output_text?: string };
-  return Response.json({ notes: data.output_text ?? "AI 沒有回傳筆記內容。" });
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const notes = data.choices?.[0]?.message?.content?.trim();
+  if (!notes) return Response.json({ error: "AI 沒有回傳筆記內容。" }, { status: 422 });
+  return Response.json({ notes });
 }
