@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     method: "POST", headers: { Authorization: `Bearer ${apiKey}` }, body,
   });
   if (!result.ok) return Response.json({ error: "轉錄失敗，請確認音檔格式與 API 設定。" }, { status: result.status });
-  const data = await result.json();
+  const data = (await result.json()) as { segments?: Segment[]; text?: string };
   const transcript = (data.segments || []).map((s: Segment) => ({
     start: s.start ?? 0, end: s.end ?? 0, speaker: s.speaker || "說話者 1", text: s.text || "",
   }));
