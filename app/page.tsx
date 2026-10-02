@@ -1,11 +1,12 @@
 "use client";
 
-import { ChangeEvent, useEffect, useRef, useState } from "react";
-import { ChevronDown, CircleStop, FileAudio, Folder, ImagePlus, LayoutList, ListChecks, Mic, Pause, Plus, Search, Sparkles, Table2, Type, Upload } from "lucide-react";
+import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
+import { ChevronDown, CircleStop, Code2, FileAudio, Folder, GripVertical, ImagePlus, LayoutList, ListChecks, ListOrdered, Mic, Pause, Plus, Quote, Search, Sparkles, Table2, Type } from "lucide-react";
 
 type Segment = { start: number; end: number; speaker: string; text: string };
 type AudioAsset = { blob: Blob; url: string };
 type ImageAsset = { file: File; url: string; name: string };
+type ImageMenu = { x: number; y: number } | null;
 type Mode = "home" | "page";
 
 const formatTime = (seconds: number) => `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
@@ -34,6 +35,7 @@ export default function Home() {
   const [generating, setGenerating] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
+  const [imageMenu, setImageMenu] = useState<ImageMenu>(null);
 
   useEffect(() => {
     if (!recording || paused) return;
@@ -139,9 +141,20 @@ export default function Home() {
     finally { setGenerating(false); }
   };
 
-  const selectImage = (event: ChangeEvent<HTMLInputElement>) => {
+  const selectImage = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; if (!file) return;
-    setImage((current) => { if (current) URL.revokeObjectURL(current.url); return { file, url: URL.createObjectURL(file), name: file.name }; });
+    const isHeic = file.type === "image/heic" || file.type === "image/heif" || /\.hei[cf]$/i.test(file.name);
+    let previewUrl = URL.createObjectURL(file);
+    if (isHeic) {
+      try {
+        const form = new FormData(); form.append("image", file);
+        const response = await fetch("/api/image-preview", { method: "POST", body: form });
+        const data = await response.json() as { dataUrl?: string };
+        if (!response.ok || !data.dataUrl) throw new Error();
+        URL.revokeObjectURL(previewUrl); previewUrl = data.dataUrl;
+      } catch { setStatus("此 HEIC 圖片目前無法在瀏覽器完整預覽，但仍可在圖片上按右鍵進行文字辨識。"); }
+    }
+    setImage((current) => { if (current) URL.revokeObjectURL(current.url); return { file, url: previewUrl, name: file.name }; });
     event.target.value = "";
   };
 
@@ -159,6 +172,11 @@ export default function Home() {
     finally { setOcrLoading(false); }
   };
 
+  const dragImage = (event: DragEvent<HTMLDivElement>) => {
+    event.dataTransfer.setData("text/plain", "memo-image");
+    event.dataTransfer.effectAllowed = "move";
+  };
+
   if (mode === "home") return <main className="flex min-h-screen bg-white text-[#2f2f2f]">
     <Sidebar onNew={() => beginPage()} />
     <section className="flex min-w-0 flex-1 items-center justify-center p-8"><div className="max-w-xl text-center"><div className="mx-auto mb-5 grid h-14 w-14 place-items-center rounded-2xl bg-[#f0edff] text-[#715df2]"><LayoutList /></div><h1 className="text-3xl font-semibold">你的工作區是空白的</h1><p className="mt-3 leading-7 text-[#777771]">從一頁筆記開始、錄下會議，或將圖片轉成可編輯的文字。所有內容都會在同一張白色畫布中完成。</p><div className="mt-8 flex flex-wrap justify-center gap-3"><button onClick={() => beginPage("未命名筆記")} className="rounded-md bg-[#2f2f2f] px-4 py-2.5 text-sm font-medium text-white"><Plus className="mr-1 inline h-4 w-4" />建立空白筆記</button><button onClick={() => beginPage("未命名會議")} className="rounded-md border border-[#deded8] px-4 py-2.5 text-sm font-medium"><Mic className="mr-1 inline h-4 w-4" />建立錄音頁</button></div></div></section>
@@ -174,10 +192,10 @@ export default function Home() {
           <div className="mt-3 flex flex-wrap items-center gap-2">{!recording ? <button onClick={startRecording} className="rounded-md bg-[#2f2f2f] px-3 py-2 text-sm text-white"><Mic className="mr-1 inline h-4 w-4" />開始錄音</button> : <><button onClick={togglePause} className="rounded-md border border-[#deded8] px-3 py-2 text-sm"><Pause className="mr-1 inline h-4 w-4" />{paused ? "繼續" : "暫停"}</button><button onClick={stopRecording} className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700"><CircleStop className="mr-1 inline h-4 w-4" />停止</button></>}{audio && !recording && <button disabled={transcribing} onClick={transcribe} className="rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb] disabled:opacity-50"><FileAudio className="mr-1 inline h-4 w-4" />{transcribing ? "轉錄中…" : "產生逐字稿"}</button>}<span className="text-xs text-[#85857e]">{status}</span></div>{audio && <audio className="mt-3 h-9 w-full" controls src={audio.url} />}</div>
         </section>
 
-        <section className="mt-6"><div className="mb-2 flex flex-wrap items-center gap-2"><div className="flex rounded-md border border-[#e5e5df] bg-[#fafaf9] p-1"><ToolbarButton label="H1" onClick={() => insertHtml("<h1>標題</h1><p><br></p>")} /><ToolbarButton label="H2" onClick={() => insertHtml("<h2>小標題</h2><p><br></p>")} /><ToolbarButton label="• 清單" onClick={() => document.execCommand("insertUnorderedList")} /><ToolbarButton label="✓ 待辦" onClick={() => insertHtml('<p>☐ 待辦事項</p>')} /><ToolbarButton label="引用" onClick={() => insertHtml("<blockquote>引用內容</blockquote><p><br></p>")} /><ToolbarButton label="表格" onClick={insertTable} icon={<Table2 className="h-3.5 w-3.5" />} /></div><button onClick={() => imageInputRef.current?.click()} className="inline-flex items-center gap-1 rounded-md border border-[#e5e5df] px-2.5 py-1.5 text-xs hover:bg-[#fafafa]"><ImagePlus className="h-3.5 w-3.5" />圖片</button><button disabled={!segments.length || generating} onClick={generateNotes} className="ml-auto inline-flex items-center gap-1 rounded-md bg-[#715df2] px-3 py-2 text-sm font-medium text-white disabled:opacity-40"><Sparkles className="h-4 w-4" />{generating ? "整理中…" : "AI 整理筆記"}</button></div>
-          <div className="relative rounded-lg border border-[#e4e4de] bg-white"><div ref={editorRef} contentEditable suppressContentEditableWarning onInput={(event) => setSlashOpen((event.currentTarget.textContent || "").endsWith("/"))} onKeyDown={(event) => { if (event.key === "/") setSlashOpen(true); if (event.key === "Escape") setSlashOpen(false); }} className="memo-editor min-h-[350px] p-5 outline-none" data-placeholder="輸入 / 可叫出區塊選單，或直接開始撰寫…" />{slashOpen && <div className="absolute left-5 top-14 z-10 w-60 rounded-lg border border-[#ddd] bg-white p-2 shadow-xl"><p className="px-2 pb-1 text-xs text-[#888]">插入區塊</p><MenuButton icon={<Type />} label="文字" onClick={() => insertHtml("<p>文字</p>")} /><MenuButton icon={<ListChecks />} label="待辦清單" onClick={() => insertHtml("<p>☐ 待辦事項</p>")} /><MenuButton icon={<Table2 />} label="表格" onClick={insertTable} /><MenuButton icon={<ImagePlus />} label="圖片" onClick={() => { setSlashOpen(false); imageInputRef.current?.click(); }} /></div>}</div>
+        <section className="mt-6"><div className="mb-2 flex flex-wrap items-center gap-2"><div className="flex rounded-md border border-[#e5e5df] bg-[#fafaf9] p-1"><ToolbarButton label="H1" onClick={() => insertHtml("<h1>標題</h1><p><br></p>")} /><ToolbarButton label="H2" onClick={() => insertHtml("<h2>小標題</h2><p><br></p>")} /><ToolbarButton label="H3" onClick={() => insertHtml("<h3>小節標題</h3><p><br></p>")} /><ToolbarButton label="• 清單" onClick={() => document.execCommand("insertUnorderedList")} /><ToolbarButton label="1. 清單" onClick={() => document.execCommand("insertOrderedList")} /><ToolbarButton label="✓ 待辦" onClick={() => insertHtml('<p>☐ 待辦事項</p>')} /><ToolbarButton label="引用" onClick={() => insertHtml("<blockquote>引用內容</blockquote><p><br></p>")} /><ToolbarButton label="表格" onClick={insertTable} icon={<Table2 className="h-3.5 w-3.5" />} /></div><button onClick={() => imageInputRef.current?.click()} className="inline-flex items-center gap-1 rounded-md border border-[#e5e5df] px-2.5 py-1.5 text-xs hover:bg-[#fafafa]"><ImagePlus className="h-3.5 w-3.5" />圖片</button><button disabled={!segments.length || generating} onClick={generateNotes} className="ml-auto inline-flex items-center gap-1 rounded-md bg-[#715df2] px-3 py-2 text-sm font-medium text-white disabled:opacity-40"><Sparkles className="h-4 w-4" />{generating ? "整理中…" : "AI 整理筆記"}</button></div>
+          <div className="group relative rounded-lg border border-[#e4e4de] bg-white"><div className="absolute -left-11 top-4 hidden items-center gap-1 group-hover:flex"><button title="新增區塊" onClick={() => setSlashOpen(true)} className="grid h-7 w-7 place-items-center rounded text-[#8b8b84] hover:bg-[#f1f1ed]"><Plus className="h-4 w-4" /></button><button title="拖曳區塊" draggable className="grid h-7 w-7 cursor-grab place-items-center rounded text-[#8b8b84] hover:bg-[#f1f1ed]"><GripVertical className="h-4 w-4" /></button></div><div ref={editorRef} contentEditable suppressContentEditableWarning onInput={(event) => setSlashOpen((event.currentTarget.textContent || "").endsWith("/"))} onKeyDown={(event) => { if (event.key === "/") setSlashOpen(true); if (event.key === "Escape") setSlashOpen(false); }} className="memo-editor min-h-[350px] p-5 outline-none" data-placeholder="輸入 / 可叫出區塊選單，或直接開始撰寫…" />{slashOpen && <div className="absolute left-5 top-14 z-10 w-60 rounded-lg border border-[#ddd] bg-white p-2 shadow-xl"><p className="px-2 pb-1 text-xs text-[#888]">插入區塊</p><MenuButton icon={<Type />} label="文字" onClick={() => insertHtml("<p>文字</p>")} /><MenuButton icon={<Type />} label="標題 1" onClick={() => insertHtml("<h1>標題</h1><p><br></p>")} /><MenuButton icon={<ListChecks />} label="待辦清單" onClick={() => insertHtml("<p>☐ 待辦事項</p>")} /><MenuButton icon={<ListOrdered />} label="編號清單" onClick={() => document.execCommand("insertOrderedList")} /><MenuButton icon={<Quote />} label="引用" onClick={() => insertHtml("<blockquote>引用內容</blockquote><p><br></p>")} /><MenuButton icon={<Code2 />} label="程式碼" onClick={() => insertHtml("<pre><code>輸入程式碼</code></pre><p><br></p>")} /><MenuButton icon={<Table2 />} label="表格" onClick={insertTable} /><MenuButton icon={<ImagePlus />} label="圖片" onClick={() => { setSlashOpen(false); imageInputRef.current?.click(); }} /></div>}</div>
           <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={selectImage} />
-          {image && <div className="mt-4 rounded-lg border border-[#e5e5df] p-3"><div className="flex flex-wrap items-start gap-3"><img src={image.url} alt={image.name} className="max-h-48 max-w-full rounded object-contain" /><div><p className="text-sm font-medium">{image.name}</p><p className="mt-1 text-xs text-[#85857e]">點選下方按鈕以 AI 擷取圖片中的文字，並插入畫布。</p><button disabled={ocrLoading} onClick={extractImageText} className="mt-3 rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb] disabled:opacity-50">{ocrLoading ? "轉換中…" : "AI 轉換為文字"}</button></div></div></div>}
+          {image && <div draggable onDragStart={dragImage} className="group relative mt-4 rounded-lg border border-[#e5e5df] bg-white p-2"><div className="absolute -left-11 top-3 hidden items-center gap-1 group-hover:flex"><button title="新增區塊" onClick={() => setSlashOpen(true)} className="grid h-7 w-7 place-items-center rounded text-[#8b8b84] hover:bg-[#f1f1ed]"><Plus className="h-4 w-4" /></button><span title="拖曳圖片區塊" className="grid h-7 w-7 cursor-grab place-items-center rounded text-[#8b8b84] hover:bg-[#f1f1ed]"><GripVertical className="h-4 w-4" /></span></div><img onContextMenu={(event) => { event.preventDefault(); setImageMenu({ x: event.clientX, y: event.clientY }); }} src={image.url} alt={image.name} className="max-h-[680px] w-full cursor-context-menu rounded object-contain" />{imageMenu && <div style={{ left: imageMenu.x, top: imageMenu.y }} className="fixed z-50 w-52 rounded-lg border border-[#deded8] bg-white p-1.5 shadow-xl"><button disabled={ocrLoading} onClick={() => { setImageMenu(null); void extractImageText(); }} className="flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm hover:bg-[#f4f3ff] disabled:opacity-50"><Sparkles className="h-4 w-4 text-[#715df2]" />{ocrLoading ? "AI 轉換中…" : "AI 轉換為文字"}</button><button onClick={() => setImageMenu(null)} className="flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm hover:bg-[#f4f3ff]">關閉選單</button></div>}</div>}
           {error && <p className="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</p>}
         </section>
         {segments.length > 0 && <section className="mt-8 border-t border-[#e9e9e4] pt-6"><h2 className="mb-3 text-lg font-semibold">逐字稿</h2><div className="space-y-2">{segments.map((segment, index) => <div key={`${segment.start}-${index}`} className="rounded-md border border-[#eeeeea] p-3 text-sm"><span className="mr-3 font-mono text-[#715df2]">{formatTime(segment.start)}</span><b>{segment.speaker}</b><p className="mt-1 pl-12 leading-6 text-[#575751]">{segment.text}</p></div>)}</div></section>}

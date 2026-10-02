@@ -1,3 +1,7 @@
+import convert from "heic-convert";
+
+export const runtime = "nodejs";
+
 export async function POST(request: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -7,10 +11,20 @@ export async function POST(request: Request) {
   const form = await request.formData();
   const image = form.get("image");
   if (!(image instanceof File)) return Response.json({ error: "找不到圖片檔。" }, { status: 400 });
-  if (!image.type.startsWith("image/")) return Response.json({ error: "請上傳圖片格式的檔案。" }, { status: 400 });
+  const isHeic = image.type === "image/heic" || image.type === "image/heif" || /\.hei[cf]$/i.test(image.name);
+  if (!image.type.startsWith("image/") && !isHeic) return Response.json({ error: "請上傳圖片格式的檔案。" }, { status: 400 });
 
-  const bytes = Buffer.from(await image.arrayBuffer());
-  const dataUrl = `data:${image.type};base64,${bytes.toString("base64")}`;
+  let bytes = Buffer.from(await image.arrayBuffer());
+  let mimeType = image.type || "image/jpeg";
+  if (isHeic) {
+    try {
+      bytes = Buffer.from(await convert({ buffer: bytes, format: "JPEG", quality: 0.9 }));
+      mimeType = "image/jpeg";
+    } catch {
+      return Response.json({ error: "無法讀取這張 HEIC 圖片。請改用 JPEG 或 PNG 後再試。" }, { status: 422 });
+    }
+  }
+  const dataUrl = `data:${mimeType};base64,${bytes.toString("base64")}`;
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
