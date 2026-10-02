@@ -25,17 +25,23 @@ export async function POST(request: Request) {
     }
   }
   const dataUrl = `data:${mimeType};base64,${bytes.toString("base64")}`;
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
       model: process.env.OPENAI_OCR_MODEL ?? "gpt-4.1-mini",
-      instructions: "你是精準 OCR 助手。只轉寫圖片中可辨識的文字，保留原本段落、清單與表格的閱讀順序。不要摘要、翻譯、補字、猜測或加入任何說明。使用繁體中文輸出（除非原文是其他語言）。",
-      input: [{ role: "user", content: [{ type: "input_text", text: "請將這張圖片轉成可編輯的純文字。" }, { type: "input_image", image_url: dataUrl }] }],
+      temperature: 0,
+      max_tokens: 4000,
+      messages: [
+        { role: "system", content: "你是精準 OCR 助手。只轉寫圖片中可辨識的文字，保留原本段落、標題層級與清單閱讀順序。不要摘要、翻譯、補字、猜測或加入任何說明。使用繁體中文輸出（除非原文是其他語言）。" },
+        { role: "user", content: [{ type: "text", text: "請將這張圖片轉成可編輯的純文字。" }, { type: "image_url", image_url: { url: dataUrl } }] },
+      ],
     }),
   });
 
   if (!response.ok) return Response.json({ error: "圖片文字辨識失敗，請確認 OpenAI API 設定與圖片格式。" }, { status: response.status });
-  const data = await response.json() as { output_text?: string };
-  return Response.json({ text: data.output_text ?? "" });
+  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+  const text = data.choices?.[0]?.message?.content?.trim();
+  if (!text) return Response.json({ error: "AI 沒有回傳可辨識文字。請確認圖片清晰後重試。" }, { status: 422 });
+  return Response.json({ text });
 }
