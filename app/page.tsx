@@ -32,6 +32,8 @@ type NoteItem = {
   title: string;
   editedAt: string;
   folderId?: string;
+  emoji?: string;
+  contentHtml?: string;
 };
 type FolderItem = { id: string; name: string };
 type Clip = {
@@ -55,6 +57,7 @@ const fmt = (n: number) =>
     .padStart(2, "0")}`;
 
 export default function Home() {
+  const { isLoaded: authLoaded, isSignedIn } = useUser();
   const editor = useRef<HTMLDivElement>(null),
     selection = useRef<Range | null>(null),
     imageInput = useRef<HTMLInputElement>(null),
@@ -79,6 +82,7 @@ export default function Home() {
       },
     ]),
     [activeNoteId, setActiveNoteId] = useState("first-note");
+  const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [folders, setFolders] = useState<FolderItem[]>([]),
     [activeFolder, setActiveFolder] = useState<string | "all">("all"),
     [workspaceView, setWorkspaceView] = useState<"note" | "all">("note"),
@@ -119,22 +123,40 @@ export default function Home() {
     return () => clearInterval(id);
   }, [recording, paused]);
   useEffect(() => {
-    const stored = window.localStorage.getItem("memo-ai-notes");
-    if (!stored) return;
-    try {
-      const saved = JSON.parse(stored) as NoteItem[];
-      if (saved.length) {
-        setNotes(saved);
-        setActiveNoteId(saved[0].id);
-        setTitle(saved[0].title);
-      }
-    } catch {
-      /* ignore invalid local data */
-    }
-  }, []);
+    if (!authLoaded || !isSignedIn) return;
+    let cancelled = false;
+    void fetch("/api/workspace")
+      .then((res) => (res.ok ? (res.json() as Promise<{ notes: NoteItem[]; folders: FolderItem[] }>) : Promise.reject(new Error("載入失敗"))))
+      .then((data) => {
+        if (cancelled) return;
+        if (data.notes.length) {
+          const first = data.notes[0];
+          setNotes(data.notes);
+          setFolders(data.folders);
+          setActiveNoteId(first.id);
+          setTitle(first.title);
+          setEmoji(first.emoji || "📄");
+          setEdited(new Date(first.editedAt));
+          if (editor.current) editor.current.innerHTML = first.contentHtml || "";
+        }
+      })
+      .finally(() => !cancelled && setWorkspaceLoaded(true));
+    return () => { cancelled = true; };
+  }, [authLoaded, isSignedIn]);
   useEffect(() => {
     window.localStorage.setItem("memo-ai-notes", JSON.stringify(notes));
   }, [notes]);
+  useEffect(() => {
+    if (!workspaceLoaded || !isSignedIn) return;
+    const id = window.setTimeout(() => {
+      void fetch("/api/workspace", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folders, notes }),
+      });
+    }, 650);
+    return () => window.clearTimeout(id);
+  }, [folders, notes, workspaceLoaded, isSignedIn]);
   useEffect(() => {
     const close = () => setMenu("none");
     document.addEventListener("mousedown", close);
@@ -185,6 +207,12 @@ export default function Home() {
       ),
     );
   };
+  const saveEditor = () => {
+    const now = new Date();
+    const contentHtml = editor.current?.innerHTML || "";
+    setEdited(now);
+    setNotes((current) => current.map((note) => note.id === activeNoteId ? { ...note, contentHtml, editedAt: now.toISOString() } : note));
+  };
   const newNote = () => {
     const now = new Date();
     const usedTitles = new Set(notes.map((item) => item.title));
@@ -195,6 +223,8 @@ export default function Home() {
       title: `未命名筆記 ${index}`,
       editedAt: now.toISOString(),
       folderId: activeFolder === "all" ? undefined : activeFolder,
+      emoji: "📄",
+      contentHtml: "",
     };
     setNotes((current) => [note, ...current]);
     setActiveNoteId(note.id);
@@ -212,12 +242,15 @@ export default function Home() {
     setStatus("可直接寫筆記；需要時再開始錄音。");
   };
   const selectNote = (note: NoteItem) => {
+    saveEditor();
     setActiveNoteId(note.id);
     setTitle(note.title);
+    setEmoji(note.emoji || "📄");
     setEdited(new Date(note.editedAt));
     setRecordingPanel(false);
     setSelectedClipId(null);
     setWorkspaceView("note");
+    if (editor.current) editor.current.innerHTML = note.contentHtml || "";
   };
   const createFolder = () => {
     const name = window.prompt("資料夾名稱");
@@ -576,7 +609,11 @@ export default function Home() {
           <div className="flex items-center gap-3">
             <input
               value={emoji}
-              onChange={(e) => setEmoji(e.target.value)}
+              onChange={(e) => {
+                const value = e.target.value || "📄";
+                setEmoji(value);
+                setNotes((current) => current.map((note) => note.id === activeNoteId ? { ...note, emoji: value, editedAt: new Date().toISOString() } : note));
+              }}
               className="h-12 w-14 border-0 bg-transparent text-center text-3xl outline-none"
               title="點擊後按 Control + Command + Space 開啟系統 Emoji 選擇器"
             />
@@ -755,7 +792,7 @@ export default function Home() {
                   suppressContentEditableWarning
                   onInput={() => {
                     remember();
-                    setEdited(new Date());
+                    saveEditor();
                   }}
                   onKeyUp={remember}
                   onMouseUp={remember}
