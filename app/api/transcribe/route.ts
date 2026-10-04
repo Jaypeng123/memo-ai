@@ -28,12 +28,20 @@ export async function POST(request: Request) {
   if (!apiKey) return Response.json({ error: "轉錄服務尚未設定。" }, { status: 503 });
   const incoming = await request.formData();
   const audio = incoming.get("audio");
+  const mode = incoming.get("mode") === "diarize" ? "diarize" : "accurate";
+  const vocabulary = typeof incoming.get("vocabulary") === "string" ? String(incoming.get("vocabulary")).slice(0, 1200) : "";
   if (!(audio instanceof File)) return Response.json({ error: "找不到錄音檔。" }, { status: 400 });
   const body = new FormData();
   body.append("file", audio, audio.name || "recording.webm");
-  body.append("model", process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-transcribe-diarize");
-  body.append("response_format", "diarized_json");
-  body.append("chunking_strategy", "auto");
+  body.append("model", mode === "diarize" ? (process.env.OPENAI_DIARIZATION_MODEL || "gpt-4o-transcribe-diarize") : (process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-transcribe"));
+  if (mode === "diarize") {
+    body.append("response_format", "diarized_json");
+    body.append("chunking_strategy", "auto");
+  } else {
+    body.append("response_format", "json");
+    body.append("language", "zh");
+    body.append("prompt", `這是一段台灣繁體中文為主、可能夾雜英文縮寫與產品名稱的錄音。請保留英文專有名詞與縮寫，正確斷句。${vocabulary ? `本次已知詞彙：${vocabulary}` : ""}`);
+  }
   const result = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST", headers: { Authorization: `Bearer ${apiKey}` }, body,
   });
@@ -42,6 +50,7 @@ export async function POST(request: Request) {
   const rawTranscript = (data.segments || []).map((s: Segment) => ({
     start: s.start ?? 0, end: s.end ?? 0, speaker: s.speaker || "說話者 1", text: s.text || "",
   }));
-  const transcript = await improveTranscript(rawTranscript, apiKey);
+  const fallback = data.text ? [{ start: 0, end: 0, speaker: "說話者", text: data.text }] : [];
+  const transcript = await improveTranscript(rawTranscript.length ? rawTranscript : fallback, apiKey);
   return Response.json({ text: transcript.map((segment) => segment.text).join("\n") || data.text || "", transcript });
 }
