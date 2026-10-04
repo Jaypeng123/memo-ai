@@ -60,6 +60,7 @@ const fmt = (n: number) =>
 
 export default function Home() {
   const { isLoaded: authLoaded, isSignedIn } = useUser();
+  const [initialNoteId] = useState(() => crypto.randomUUID());
   const editor = useRef<HTMLDivElement>(null),
     selection = useRef<Range | null>(null),
     imageInput = useRef<HTMLInputElement>(null),
@@ -74,19 +75,19 @@ export default function Home() {
     secondsRef = useRef(0),
     sessions = useRef(new Map<string, NoteSession>()),
     recordingNoteId = useRef<string | null>(null),
-    activeNoteRef = useRef("first-note");
+    activeNoteRef = useRef(initialNoteId);
   const [tab, setTab] = useState<Tab>("notes"),
     [title, setTitle] = useState("未命名筆記"),
     [emoji, setEmoji] = useState("📄"),
     [edited, setEdited] = useState(new Date());
   const [notes, setNotes] = useState<NoteItem[]>([
       {
-        id: "first-note",
+        id: initialNoteId,
         title: "未命名筆記",
         editedAt: new Date().toISOString(),
       },
     ]),
-    [activeNoteId, setActiveNoteId] = useState("first-note");
+    [activeNoteId, setActiveNoteId] = useState(initialNoteId);
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [folders, setFolders] = useState<FolderItem[]>([]),
     [activeFolder, setActiveFolder] = useState<string | "all">("all"),
