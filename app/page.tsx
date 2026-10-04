@@ -4,8 +4,8 @@ import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
 import { UserButton, useUser } from "@clerk/nextjs";
 import {
   AudioLines,
-  ChevronDown,
   CircleStop,
+  Copy,
   FileAudio,
   Folder,
   GripVertical,
@@ -15,6 +15,7 @@ import {
   ListOrdered,
   Mic,
   Pause,
+  PanelRight,
   Plus,
   Quote,
   Search,
@@ -22,6 +23,7 @@ import {
   Table2,
   Trash2,
   Type,
+  X,
 } from "lucide-react";
 
 type Segment = { start: number; end: number; speaker: string; text: string };
@@ -40,7 +42,8 @@ export default function Home() {
   const editor = useRef<HTMLDivElement>(null),
     selection = useRef<Range | null>(null),
     imageInput = useRef<HTMLInputElement>(null),
-    activeBlock = useRef<HTMLElement | null>(null);
+    activeBlock = useRef<HTMLElement | null>(null),
+    blockLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recorder = useRef<MediaRecorder | null>(null),
     stream = useRef<MediaStream | null>(null),
     context = useRef<AudioContext | null>(null),
@@ -77,6 +80,7 @@ export default function Home() {
     [imageImporting, setImageImporting] = useState(false),
     [draggingImage, setDraggingImage] = useState(false),
     [blockControlTop, setBlockControlTop] = useState<number | null>(null),
+    [recordingPanel, setRecordingPanel] = useState(false),
     [error, setError] = useState(""),
     [status, setStatus] = useState("可直接寫筆記；需要時再開始錄音。");
 
@@ -220,6 +224,14 @@ export default function Home() {
     range.collapse(true);
     selection.current = range;
     insert(html);
+  };
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus("已複製到剪貼簿，可貼到筆記任一位置。 ");
+    } catch {
+      setError("無法存取剪貼簿，請手動選取後複製。 ");
+    }
   };
   const table = () =>
     insert(
@@ -504,20 +516,39 @@ export default function Home() {
             })}{" "}
             · 私人頁面
           </p>
-          <Recorder
+          <AudioComposer
+            clipCount={clips.length}
             recording={recording}
-            paused={paused}
-            audio={audio}
-            clips={clips}
-            seconds={seconds}
-            levels={levels}
-            transcribing={transcribing}
-            status={status}
-            onStart={start}
-            onPause={pause}
-            onStop={stop}
-            onTranscribe={transcribe}
+            onOpen={() => setRecordingPanel(true)}
           />
+          {recordingPanel && (
+            <RecordingPanel
+              recording={recording}
+              paused={paused}
+              audio={audio}
+              clips={clips}
+              segments={segments}
+              seconds={seconds}
+              levels={levels}
+              transcribing={transcribing}
+              status={status}
+              onStart={start}
+              onPause={pause}
+              onStop={stop}
+              onTranscribe={transcribe}
+              onCopyTranscript={() =>
+                void copyText(
+                  segments
+                    .map(
+                      (item) =>
+                        `[${fmt(item.start)}] ${item.speaker}：${item.text}`,
+                    )
+                    .join("\n"),
+                )
+              }
+              onClose={() => setRecordingPanel(false)}
+            />
+          )}
           <nav className="mt-7 flex items-center gap-1 border-b border-[#e9e9e4]">
             <Tab
               active={tab === "notes"}
@@ -565,14 +596,18 @@ export default function Home() {
                 drop(event);
               }}
             >
-              <Toolbar
-                onImage={() => imageInput.current?.click()}
-                onTable={table}
-                onInsert={insert}
-              />
               <div
-                className="relative pl-16"
-                onMouseLeave={() => setBlockControlTop(null)}
+                className="relative pl-14"
+                onMouseLeave={() => {
+                  blockLeaveTimer.current = setTimeout(
+                    () => setBlockControlTop(null),
+                    220,
+                  );
+                }}
+                onMouseEnter={() => {
+                  if (blockLeaveTimer.current)
+                    clearTimeout(blockLeaveTimer.current);
+                }}
                 onMouseMove={(event) => {
                   const target = (event.target as HTMLElement).closest(
                     "p,h1,h2,h3,blockquote,figure,li,table",
@@ -598,7 +633,7 @@ export default function Home() {
                 {blockControlTop !== null && (
                   <div
                     style={{ top: blockControlTop }}
-                    className="absolute -left-1 z-20 flex gap-1"
+                    className="absolute left-1 z-20 flex gap-1"
                   >
                     <button
                       onMouseDown={(event) => event.preventDefault()}
@@ -631,6 +666,24 @@ export default function Home() {
                   onKeyDown={(event) => {
                     if (event.key === "/") showMenu("insert");
                     if (event.key === "Escape") setMenu("none");
+                    if (event.key === " ") {
+                      const node = window.getSelection()?.anchorNode;
+                      const line =
+                        (node instanceof HTMLElement
+                          ? node
+                          : node?.parentElement
+                        )
+                          ?.closest("p,div")
+                          ?.textContent?.trim() || "";
+                      if (line === "-" || line === "*" || line === "•") {
+                        event.preventDefault();
+                        document.execCommand("insertUnorderedList");
+                      }
+                      if (/^1[.)]$/.test(line)) {
+                        event.preventDefault();
+                        document.execCommand("insertOrderedList");
+                      }
+                    }
                   }}
                   onContextMenu={(event) => {
                     const figure = (event.target as HTMLElement).closest(
@@ -641,6 +694,10 @@ export default function Home() {
                       setSelectedImage(figure.getAttribute("data-image-id"));
                       showMenu("image", event.clientX, event.clientY);
                     }
+                  }}
+                  onFocus={(event) => {
+                    if (!event.currentTarget.innerHTML.trim())
+                      event.currentTarget.innerHTML = "<p><br></p>";
                   }}
                   className="memo-editor min-h-[360px] py-5 outline-none"
                   data-placeholder="輸入 / 可叫出區塊選單，或拖曳圖片到此處…"
@@ -734,7 +791,7 @@ function Sidebar({
       </div>
       <button
         onClick={onNew}
-        className="mb-3 flex gap-2 rounded-md border border-[#deded8] bg-white px-3 py-2.5 text-sm font-medium text-[#444] shadow-sm hover:bg-[#f5f4ff]"
+        className="mb-3 flex w-full items-center gap-2 rounded-xl bg-[#efefef] px-3 py-2.5 text-sm font-medium text-[#303030] transition hover:bg-[#e3e3e3]"
       >
         <Plus className="h-4 w-4" />
         新增筆記
@@ -777,20 +834,55 @@ function Sidebar({
         </div>
       </div>
       <div className="mt-auto flex items-center gap-2 border-t border-[#e9e9e4] px-2 py-3 text-sm text-[#73736d]">
-        <UserButton />
+        <UserButton
+          appearance={{ elements: { userButtonAvatarBox: "h-7 w-7" } }}
+        />
         <span className="min-w-0 flex-1 truncate">
           {user?.fullName || user?.primaryEmailAddress?.emailAddress || "帳戶"}
         </span>
-        <ChevronDown className="h-4 w-4" />
       </div>
     </aside>
   );
 }
-function Recorder({
+function AudioComposer({
+  clipCount,
+  recording,
+  onOpen,
+}: {
+  clipCount: number;
+  recording: boolean;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      onClick={onOpen}
+      className="mt-6 flex w-full items-center gap-3 rounded-xl border border-[#e7e7e1] bg-[#fafaf8] px-4 py-3 text-left shadow-sm transition hover:border-[#cfc8ff] hover:bg-white"
+    >
+      <span
+        className={`grid h-9 w-9 place-items-center rounded-full ${recording ? "bg-red-100 text-red-600" : "bg-[#eeeaff] text-[#705cf2]"}`}
+      >
+        <Mic className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium">
+          {recording ? "正在錄音" : "語音記錄"}
+        </span>
+        <span className="block truncate text-xs text-[#888]">
+          {clipCount
+            ? `已儲存 ${clipCount} 段錄音，開啟面板管理或轉錄`
+            : "點擊開始錄音、轉錄，或管理已錄內容"}
+        </span>
+      </span>
+      <PanelRight className="h-5 w-5 text-[#777]" />
+    </button>
+  );
+}
+function RecordingPanel({
   recording,
   paused,
   audio,
   clips,
+  segments,
   seconds,
   levels,
   transcribing,
@@ -799,11 +891,14 @@ function Recorder({
   onPause,
   onStop,
   onTranscribe,
+  onCopyTranscript,
+  onClose,
 }: {
   recording: boolean;
   paused: boolean;
   audio: { blob: Blob; url: string } | null;
   clips: Clip[];
+  segments: Segment[];
   seconds: number;
   levels: number[];
   transcribing: boolean;
@@ -812,12 +907,14 @@ function Recorder({
   onPause: () => void;
   onStop: () => void;
   onTranscribe: () => void;
+  onCopyTranscript: () => void;
+  onClose: () => void;
 }) {
   return (
-    <section className="mt-7 rounded-lg border border-[#e8e8e3]">
-      <div className="flex items-center gap-2 border-b border-[#eee] px-4 py-3">
+    <aside className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[430px] flex-col border-l border-[#e5e5e0] bg-white shadow-2xl">
+      <div className="flex items-center gap-2 border-b border-[#eee] px-5 py-4">
         <AudioLines className="h-4 w-4 text-[#715df2]" />
-        <b className="text-sm">會議錄音</b>
+        <b className="text-sm">語音記錄</b>
         <span className="rounded-full bg-[#f3f3ef] px-2 py-1 text-xs">
           {recording
             ? paused
@@ -828,8 +925,15 @@ function Recorder({
               : "尚未開始"}
         </span>
         <span className="ml-auto font-mono">{fmt(seconds)}</span>
+        <button
+          onClick={onClose}
+          className="ml-2 rounded p-1 text-[#777] hover:bg-[#f3f3f0]"
+          aria-label="關閉錄音面板"
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
-      <div className="px-4 py-3">
+      <div className="flex-1 overflow-y-auto px-5 py-4">
         <p className="text-sm text-[#74746f]">{status}</p>
         {recording && (
           <div className="mt-3 flex h-9 items-center gap-1 rounded bg-[#fafaf8] px-3">
@@ -896,8 +1000,27 @@ function Recorder({
             ))}
           </div>
         )}
+        <div className="mt-7 border-t border-[#eee] pt-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold">逐字稿</h3>
+              <p className="mt-1 text-xs text-[#888]">可複製後自行貼到筆記。</p>
+            </div>
+            <button
+              onClick={onCopyTranscript}
+              disabled={!segments.length}
+              className="rounded-md border border-[#e4e4de] p-2 text-[#666] hover:bg-[#f7f7f4] disabled:opacity-40"
+              title="複製逐字稿"
+            >
+              <Copy className="h-4 w-4" />
+            </button>
+          </div>
+          <p className="mt-4 rounded-lg bg-[#fafaf8] p-3 text-sm leading-6 text-[#777]">
+            轉錄完成後，內容會顯示在「逐字稿」分頁；可在此複製，或切換分頁直接修正。
+          </p>
+        </div>
       </div>
-    </section>
+    </aside>
   );
 }
 function Tab({
@@ -936,6 +1059,8 @@ function Toolbar({
         {[
           ["H1", "<h1>標題</h1><p><br></p>"],
           ["H2", "<h2>小標題</h2><p><br></p>"],
+          ["H3", "<h3>小標題</h3><p><br></p>"],
+          ["H4", "<h4>小標題</h4><p><br></p>"],
           ["待辦", "<p>☐ 待辦事項</p>"],
           ["引用", "<blockquote>引用內容</blockquote><p><br></p>"],
         ].map(([label, html]) => (
@@ -1100,6 +1225,16 @@ function BlockMenu({
         <>
           <p className="px-2 text-xs text-[#888]">新增區塊</p>
           {item("文字", () => onInsert("<p>文字</p>"))}
+          {item("標題 1", () => onInsert("<h1>標題</h1><p><br></p>"))}
+          {item("標題 2", () => onInsert("<h2>標題</h2><p><br></p>"))}
+          {item("標題 3", () => onInsert("<h3>標題</h3><p><br></p>"))}
+          {item("標題 4", () => onInsert("<h4>標題</h4><p><br></p>"))}
+          {item("項目符號清單", () =>
+            onInsert("<ul><li>清單項目</li></ul><p><br></p>"),
+          )}
+          {item("編號清單", () =>
+            onInsert("<ol><li>清單項目</li></ol><p><br></p>"),
+          )}
           {item("待辦清單", () => onInsert("<p>☐ 待辦事項</p>"))}
           {item("引用", () => onInsert("<blockquote>引用內容</blockquote>"))}
           {item("表格", onTable)}
@@ -1111,6 +1246,12 @@ function BlockMenu({
           <p className="px-2 text-xs text-[#888]">區塊操作</p>
           {item("轉換為標題", () =>
             document.execCommand("formatBlock", false, "h2"),
+          )}
+          {item("轉換為標題 3", () =>
+            document.execCommand("formatBlock", false, "h3"),
+          )}
+          {item("轉換為標題 4", () =>
+            document.execCommand("formatBlock", false, "h4"),
           )}
           {item("轉換為待辦", () => onInsert("<p>☐ 待辦事項</p>"))}
           {item("複製目前區塊", () => document.execCommand("copy"))}
@@ -1147,8 +1288,8 @@ function htmlFromText(text: string) {
       out.push(`<li>${esc((bullet || order)![1])}</li>`);
     } else {
       close();
-      if (/^#{1,3}\s/.test(line)) {
-        const level = Math.min(3, line.match(/^#+/)![0].length);
+      if (/^#{1,4}\s/.test(line)) {
+        const level = Math.min(4, line.match(/^#+/)![0].length);
         out.push(`<h${level}>${esc(line.replace(/^#+\s*/, ""))}</h${level}>`);
       } else if (line.length < 32 && !/[，。；：,.]/.test(line))
         out.push(`<h2>${esc(line)}</h2>`);
