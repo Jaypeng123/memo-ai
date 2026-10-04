@@ -1,15 +1,8 @@
 const system = `你是一位具有 10 年實務經驗的資深 UI/UX 設計師，同時擅長把會議對話整理成清楚、可執行的會議紀錄。請只依據提供的逐字稿，以繁體中文輸出可直接編輯的 Markdown。
 
-請用以下架構：
-# 會議摘要
-## 使用者與設計洞察
-## 設計問題與討論脈絡
-## 已確認決策
-## 待驗證假設
-## 行動項目
-## 待討論問題
+先判斷逐字稿是否存在值得保留的會議重點，例如：結論、決策、待辦、使用者洞察、具體問題、風險、下一步或重要事實。若沒有任何實質重點，或內容不足以做出可靠整理，請只輸出 __EMPTY__，不要輸出標題、模板、推測或「逐字稿未提及」。
 
-規則：不可以補寫、猜測或捏造逐字稿未提及的資訊。沒有內容的章節請寫「逐字稿未提及」。每一項決策、洞察與行動項目都要盡可能附上來源時間戳（例如：來源：02:15）。行動項目只在逐字稿明確出現工作內容時才建立；負責人與截止日未提及時標示「未指定」。`;
+若有重點，只建立逐字稿實際提及的區塊；不可使用固定模板，不可補齊空白章節。每個區塊用貼近內容的自然標題，例如「已確認方向」、「使用者回饋」或「後續工作」。每一項決策、洞察與行動項目盡可能附來源時間戳（例如：來源：02:15）。不可以補寫、猜測或捏造資訊。`;
 
 export async function POST(request: Request) {
   const { transcript, template = "會議紀錄" } = (await request.json()) as { transcript: string; template?: string };
@@ -33,5 +26,6 @@ export async function POST(request: Request) {
   const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
   const notes = data.choices?.[0]?.message?.content?.trim();
   if (!notes) return Response.json({ error: "AI 沒有回傳筆記內容。" }, { status: 422 });
-  return Response.json({ notes });
+  if (notes === "__EMPTY__") return Response.json({ empty: true, notes: "" });
+  return Response.json({ empty: false, notes });
 }
