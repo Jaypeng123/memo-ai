@@ -39,7 +39,10 @@ export async function POST(request: Request) {
     }),
   });
 
-  if (!response.ok) return Response.json({ error: "圖片文字辨識失敗，請確認 OpenAI API 設定與圖片格式。" }, { status: response.status });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+    return Response.json({ error: failure?.error?.message || "圖片文字辨識失敗，請確認 OpenAI API 設定與圖片格式。" }, { status: response.status });
+  }
   const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
   const text = data.choices?.[0]?.message?.content?.trim();
   if (!text) return Response.json({ error: "AI 沒有回傳可辨識文字。請確認圖片清晰後重試。" }, { status: 422 });

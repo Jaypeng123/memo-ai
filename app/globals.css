@@ -101,6 +101,21 @@ input {
   background: #eef4ff;
   border-radius: 10px;
 }
+.memo-editor figure.memo-image-selected {
+  position: relative;
+  box-shadow: inset 0 0 0 999px rgb(84 139 255 / 20%);
+}
+.memo-editor figure.memo-image-ocr-loading::after {
+  content: "AI 正在轉換為文字…";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgb(41 41 40 / 48%);
+  color: white;
+  font-weight: 600;
+}
 .notion-drop-line {
   position: absolute;
   z-index: 10;

@@ -27,8 +27,24 @@ import {
 } from "lucide-react";
 
 type Segment = { start: number; end: number; speaker: string; text: string };
-type NoteItem = { id: string; title: string; editedAt: string };
-type Clip = { id: string; url: string; duration: number; createdAt: string };
+type NoteItem = {
+  id: string;
+  title: string;
+  editedAt: string;
+  folderId?: string;
+};
+type FolderItem = { id: string; name: string };
+type Clip = {
+  id: string;
+  url: string;
+  blob: Blob;
+  duration: number;
+  createdAt: string;
+  title: string;
+  transcript?: Segment[];
+  summary?: string;
+};
+type PanelTab = "recording" | "transcript" | "summary";
 type Tab = "notes" | "transcript" | "summary";
 type Menu = "none" | "insert" | "block" | "image";
 const fmt = (n: number) =>
@@ -63,6 +79,10 @@ export default function Home() {
       },
     ]),
     [activeNoteId, setActiveNoteId] = useState("first-note");
+  const [folders, setFolders] = useState<FolderItem[]>([]),
+    [activeFolder, setActiveFolder] = useState<string | "all">("all"),
+    [workspaceView, setWorkspaceView] = useState<"note" | "all">("note"),
+    [searchQuery, setSearchQuery] = useState("");
   const [recording, setRecording] = useState(false),
     [paused, setPaused] = useState(false),
     [seconds, setSeconds] = useState(0),
@@ -81,6 +101,8 @@ export default function Home() {
     [draggingImage, setDraggingImage] = useState(false),
     [blockControlTop, setBlockControlTop] = useState<number | null>(null),
     [recordingPanel, setRecordingPanel] = useState(false),
+    [selectedClipId, setSelectedClipId] = useState<string | null>(null),
+    [panelTab, setPanelTab] = useState<PanelTab>("recording"),
     [error, setError] = useState(""),
     [status, setStatus] = useState("可直接寫筆記；需要時再開始錄音。");
 
@@ -165,10 +187,14 @@ export default function Home() {
   };
   const newNote = () => {
     const now = new Date();
+    const usedTitles = new Set(notes.map((item) => item.title));
+    let index = 1;
+    while (usedTitles.has(`未命名筆記 ${index}`)) index += 1;
     const note = {
       id: crypto.randomUUID(),
-      title: "未命名筆記",
+      title: `未命名筆記 ${index}`,
       editedAt: now.toISOString(),
+      folderId: activeFolder === "all" ? undefined : activeFolder,
     };
     setNotes((current) => [note, ...current]);
     setActiveNoteId(note.id);
@@ -179,7 +205,9 @@ export default function Home() {
     setAudio(null);
     setClips([]);
     setSeconds(0);
-    setTab("notes");
+    setRecordingPanel(false);
+    setSelectedClipId(null);
+    setWorkspaceView("note");
     if (editor.current) editor.current.innerHTML = "";
     setStatus("可直接寫筆記；需要時再開始錄音。");
   };
@@ -187,6 +215,22 @@ export default function Home() {
     setActiveNoteId(note.id);
     setTitle(note.title);
     setEdited(new Date(note.editedAt));
+    setRecordingPanel(false);
+    setSelectedClipId(null);
+    setWorkspaceView("note");
+  };
+  const createFolder = () => {
+    const name = window.prompt("資料夾名稱");
+    if (!name?.trim()) return;
+    setFolders((current) => [
+      ...current,
+      { id: crypto.randomUUID(), name: name.trim() },
+    ]);
+  };
+  const moveNote = (noteId: string, folderId?: string) => {
+    setNotes((current) =>
+      current.map((note) => (note.id === noteId ? { ...note, folderId } : note)),
+    );
   };
   const deleteNote = (id: string) => {
     if (
@@ -267,15 +311,17 @@ export default function Home() {
         });
         const url = URL.createObjectURL(blob);
         setAudio({ blob, url });
-        setClips((current) => [
-          ...current,
-          {
-            id: crypto.randomUUID(),
-            url,
-            duration: secondsRef.current,
-            createdAt: new Date().toISOString(),
-          },
-        ]);
+        const clip = {
+          id: crypto.randomUUID(),
+          url,
+          blob,
+          duration: secondsRef.current,
+          createdAt: new Date().toISOString(),
+          title: `錄音 ${clips.length + 1}`,
+        };
+        setClips((current) => [...current, clip]);
+        setSelectedClipId(clip.id);
+        setPanelTab("recording");
         closeAudio();
         setStatus("錄音片段已儲存。可繼續新增下一段錄音，或產生逐字稿。 ");
       };
@@ -329,15 +375,16 @@ export default function Home() {
     setPaused(false);
   };
   const transcribe = async () => {
-    if (!audio) return;
+    const clip = clips.find((item) => item.id === selectedClipId);
+    if (!clip) return;
     setTranscribing(true);
     setError("");
     try {
       const body = new FormData();
       body.append(
         "audio",
-        new File([audio.blob], "memo-recording.webm", {
-          type: audio.blob.type || "audio/webm",
+        new File([clip.blob], "memo-recording.webm", {
+          type: clip.blob.type || "audio/webm",
         }),
       );
       body.append("mode", "accurate");
@@ -347,8 +394,14 @@ export default function Home() {
         transcript?: Segment[];
       };
       if (!res.ok) throw new Error(data.error || "轉錄失敗");
-      setSegments((current) => [...current, ...(data.transcript || [])]);
-      setTab("transcript");
+      const transcript = data.transcript || [];
+      setSegments(transcript);
+      setClips((current) =>
+        current.map((item) =>
+          item.id === clip.id ? { ...item, transcript } : item,
+        ),
+      );
+      setPanelTab("transcript");
       setStatus(
         data.transcript?.length
           ? "逐字稿完成，可繼續新增錄音片段或生成會議總結。"
@@ -361,11 +414,13 @@ export default function Home() {
     }
   };
   const summarize = async () => {
-    if (!segments.length) return;
+    const clip = clips.find((item) => item.id === selectedClipId);
+    const source = clip?.transcript || segments;
+    if (!source.length) return;
     setGenerating(true);
     setError("");
     try {
-      const transcript = segments
+      const transcript = source
         .map((x) => `[${fmt(x.start)}] ${x.speaker}：${x.text}`)
         .join("\n");
       const res = await fetch("/api/ai-notes", {
@@ -379,8 +434,15 @@ export default function Home() {
         empty?: boolean;
       };
       if (!res.ok) throw new Error(data.error || "AI 生成失敗。");
-      setSummary(data.empty ? "" : data.notes || "");
-      setTab("summary");
+      const nextSummary = data.empty ? "" : data.notes || "";
+      setSummary(nextSummary);
+      if (clip)
+        setClips((current) =>
+          current.map((item) =>
+            item.id === clip.id ? { ...item, summary: nextSummary } : item,
+          ),
+        );
+      setPanelTab("summary");
       setStatus(
         data.empty
           ? "逐字稿沒有足夠的會議重點可整理。"
@@ -453,6 +515,10 @@ export default function Home() {
     setMenu("none");
     setError("");
     try {
+      const loadingFigure = editor.current?.querySelector<HTMLElement>(
+        `figure[data-image-id="${selectedImage}"]`,
+      );
+      loadingFigure?.classList.add("memo-image-ocr-loading");
       const body = new FormData();
       body.append("image", file);
       const res = await fetch("/api/ocr", { method: "POST", body });
@@ -468,6 +534,11 @@ export default function Home() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "圖片文字辨識失敗。 ");
     } finally {
+      editor.current
+        ?.querySelector<HTMLElement>(
+          `figure[data-image-id="${selectedImage}"]`,
+        )
+        ?.classList.remove("memo-image-ocr-loading");
       setOcr(false);
       setSelectedImage(null);
     }
@@ -481,14 +552,26 @@ export default function Home() {
       <Sidebar
         notes={notes}
         activeNoteId={activeNoteId}
+        folders={folders}
+        activeFolder={activeFolder}
+        workspaceView={workspaceView}
+        searchQuery={searchQuery}
         onNew={newNote}
         onSelect={selectNote}
         onDelete={deleteNote}
+        onCreateFolder={createFolder}
+        onMoveNote={moveNote}
+        onFolderSelect={setActiveFolder}
+        onAllFiles={() => setWorkspaceView("all")}
+        onSearch={setSearchQuery}
       />
       <section className="min-w-0 flex-1 overflow-auto">
         <header className="flex h-14 items-center border-b border-[#ebebe6] px-6 text-sm text-[#73736d]">
           所有頁面 <span className="mx-2">/</span> {title}
         </header>
+        {workspaceView === "all" ? (
+          <AllFiles notes={notes} folders={folders} query={searchQuery} onOpen={selectNote} onMove={moveNote} />
+        ) : (
         <div className="mx-auto max-w-4xl px-10 py-9">
           <div className="flex items-center gap-3">
             <input
@@ -522,6 +605,8 @@ export default function Home() {
             onOpen={() => setRecordingPanel(true)}
           />
           {recordingPanel && (
+            <>
+            <button aria-label="關閉錄音面板" className="fixed inset-0 z-30 cursor-default bg-black/5" onClick={() => setRecordingPanel(false)} />
             <RecordingPanel
               recording={recording}
               paused={paused}
@@ -536,20 +621,31 @@ export default function Home() {
               onPause={pause}
               onStop={stop}
               onTranscribe={transcribe}
-              onCopyTranscript={() =>
-                void copyText(
-                  segments
-                    .map(
-                      (item) =>
-                        `[${fmt(item.start)}] ${item.speaker}：${item.text}`,
-                    )
-                    .join("\n"),
-                )
-              }
               onClose={() => setRecordingPanel(false)}
+              selectedClipId={selectedClipId}
+              panelTab={panelTab}
+              generating={generating}
+              onPanelTab={setPanelTab}
+              onGenerate={summarize}
+              onSelectClip={(clip) => {
+                setSelectedClipId(clip.id);
+                setSegments(clip.transcript || []);
+                setSummary(clip.summary || "");
+                setPanelTab("recording");
+              }}
+              onRenameClip={(clipId, value) => setClips((current) => current.map((clip) => clip.id === clipId ? { ...clip, title: value } : clip))}
+              onDeleteClip={(clipId) => {
+                setClips((current) => {
+                  const removed = current.find((clip) => clip.id === clipId);
+                  if (removed) URL.revokeObjectURL(removed.url);
+                  return current.filter((clip) => clip.id !== clipId);
+                });
+                if (selectedClipId === clipId) { setSelectedClipId(null); setSegments([]); setSummary(""); }
+              }}
             />
+            </>
           )}
-          <nav className="mt-7 flex items-center gap-1 border-b border-[#e9e9e4]">
+          <nav className="hidden mt-7 items-center gap-1 border-b border-[#e9e9e4]">
             <Tab
               active={tab === "notes"}
               label="筆記"
@@ -637,7 +733,7 @@ export default function Home() {
                   >
                     <button
                       onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => showMenu("insert")}
+                      onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); showMenu("insert", rect.right + 8, rect.top); }}
                       className="grid h-7 w-7 place-items-center rounded text-[#888] hover:bg-[#f1f1ed]"
                       title="在此區塊後新增"
                     >
@@ -645,7 +741,7 @@ export default function Home() {
                     </button>
                     <button
                       onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => showMenu("block")}
+                      onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); showMenu("block", rect.right + 8, rect.top); }}
                       className="grid h-7 w-7 place-items-center rounded text-[#888] hover:bg-[#f1f1ed]"
                       title="區塊操作"
                     >
@@ -762,23 +858,47 @@ export default function Home() {
             </p>
           )}
         </div>
+        )}
       </section>
     </main>
   );
 }
 
+function AllFiles({ notes, folders, query, onOpen, onMove }: { notes: NoteItem[]; folders: FolderItem[]; query: string; onOpen: (note: NoteItem) => void; onMove: (id: string, folderId?: string) => void }) {
+  const normalized = query.trim().toLocaleLowerCase();
+  const visible = notes.filter((note) => note.title.toLocaleLowerCase().includes(normalized));
+  return <div className="mx-auto max-w-4xl px-10 py-9"><h1 className="text-3xl font-bold">所有檔案</h1><p className="mt-2 text-sm text-[#888]">可搜尋、開啟，或拖曳檔案到左側資料夾。</p><div className="mt-7 grid gap-2">{visible.map((note) => <div key={note.id} draggable onDragStart={(event) => event.dataTransfer.setData("text/memo-note", note.id)} className="flex items-center rounded-lg border border-[#e8e8e3] px-4 py-3 hover:bg-[#fafaf8]"><button onClick={() => onOpen(note)} className="min-w-0 flex-1 text-left"><b className="block truncate">{note.title}</b><span className="text-xs text-[#999]">{folders.find((folder) => folder.id === note.folderId)?.name || "未分類"} · {new Date(note.editedAt).toLocaleDateString("zh-TW")}</span></button><select value={note.folderId || ""} onChange={(event) => onMove(note.id, event.target.value || undefined)} className="rounded border border-[#e3e3dd] bg-white px-2 py-1 text-xs"><option value="">未分類</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></div>)}</div>{!visible.length && <EmptyState title="找不到檔案" description="試著改用其他關鍵字搜尋。" />}</div>;
+}
 function Sidebar({
   notes,
   activeNoteId,
+  folders,
+  activeFolder,
+  workspaceView,
+  searchQuery,
   onNew,
   onSelect,
   onDelete,
+  onCreateFolder,
+  onMoveNote,
+  onFolderSelect,
+  onAllFiles,
+  onSearch,
 }: {
   notes: NoteItem[];
   activeNoteId: string;
+  folders: FolderItem[];
+  activeFolder: string | "all";
+  workspaceView: "note" | "all";
+  searchQuery: string;
   onNew: () => void;
   onSelect: (note: NoteItem) => void;
   onDelete: (id: string) => void;
+  onCreateFolder: () => void;
+  onMoveNote: (id: string, folderId?: string) => void;
+  onFolderSelect: (id: string | "all") => void;
+  onAllFiles: () => void;
+  onSearch: (value: string) => void;
 }) {
   const { user } = useUser();
   return (
@@ -796,24 +916,27 @@ function Sidebar({
         <Plus className="h-4 w-4" />
         新增筆記
       </button>
-      <button className="flex gap-2 rounded px-2 py-2 text-sm hover:bg-[#efefea]">
+      <button onClick={onAllFiles} className={`flex gap-2 rounded px-2 py-2 text-sm ${workspaceView === "all" ? "bg-[#ece9ff] text-[#604deb]" : "hover:bg-[#efefea]"}`}>
         <LayoutList className="h-4 w-4" />
-        所有筆記
+        所有檔案
       </button>
-      <button className="flex gap-2 rounded px-2 py-2 text-sm hover:bg-[#efefea]">
+      <label className="mt-1 flex items-center gap-2 rounded px-2 py-2 text-sm hover:bg-[#efefea]">
         <Search className="h-4 w-4" />
-        搜尋
-      </button>
-      <p className="mt-7 px-2 text-xs text-[#999]">私人資料夾</p>
+        <input value={searchQuery} onFocus={onAllFiles} onChange={(e) => onSearch(e.target.value)} placeholder="搜尋" className="min-w-0 w-full text-sm outline-none" />
+      </label>
+      <div className="mt-7 flex items-center justify-between px-2 text-xs text-[#999]"><span>私人資料夾</span><button onClick={onCreateFolder} className="rounded p-1 text-base hover:bg-[#efefea]" aria-label="新增資料夾">+</button></div>
       <div className="mt-2">
-        <p className="flex gap-2 px-2 text-sm text-[#666]">
+        <button onClick={() => onFolderSelect("all")} className={`flex w-full gap-2 rounded px-2 py-1 text-left text-sm ${activeFolder === "all" ? "text-[#604deb]" : "text-[#666]"}`}>
           <Folder className="h-4 w-4" />
           所有筆記
-        </p>
+        </button>
+        {folders.map((folder) => <button key={folder.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { const id = e.dataTransfer.getData("text/memo-note"); if (id) onMoveNote(id, folder.id); }} onClick={() => onFolderSelect(folder.id)} className={`mt-1 flex w-full gap-2 rounded px-2 py-1 text-left text-sm ${activeFolder === folder.id ? "bg-[#ece9ff] text-[#604deb]" : "text-[#666] hover:bg-[#efefea]"}`}><Folder className="h-4 w-4" />{folder.name}</button>)}
         <div className="mt-1 space-y-0.5">
-          {notes.map((note) => (
+          {notes.filter((note) => activeFolder === "all" || note.folderId === activeFolder).map((note) => (
             <div
               key={note.id}
+              draggable
+              onDragStart={(event) => event.dataTransfer.setData("text/memo-note", note.id)}
               className={`group flex items-center rounded ${activeNoteId === note.id ? "bg-[#ece9ff] text-[#604deb]" : "text-[#555] hover:bg-[#efefea]"}`}
             >
               <button
@@ -833,7 +956,7 @@ function Sidebar({
           ))}
         </div>
       </div>
-      <div className="mt-auto flex items-center gap-2 border-t border-[#e9e9e4] px-2 py-3 text-sm text-[#73736d]">
+      <div role="button" tabIndex={0} onClick={() => document.querySelector<HTMLElement>(".cl-userButtonTrigger")?.click()} className="mt-auto flex cursor-pointer items-center gap-2 border-t border-[#e9e9e4] px-2 py-3 text-sm text-[#73736d] hover:bg-[#f1f1ed]">
         <UserButton
           appearance={{ elements: { userButtonAvatarBox: "h-7 w-7" } }}
         />
@@ -891,8 +1014,15 @@ function RecordingPanel({
   onPause,
   onStop,
   onTranscribe,
-  onCopyTranscript,
   onClose,
+  selectedClipId,
+  panelTab,
+  generating,
+  onPanelTab,
+  onGenerate,
+  onSelectClip,
+  onRenameClip,
+  onDeleteClip,
 }: {
   recording: boolean;
   paused: boolean;
@@ -907,9 +1037,17 @@ function RecordingPanel({
   onPause: () => void;
   onStop: () => void;
   onTranscribe: () => void;
-  onCopyTranscript: () => void;
   onClose: () => void;
+  selectedClipId: string | null;
+  panelTab: PanelTab;
+  generating: boolean;
+  onPanelTab: (tab: PanelTab) => void;
+  onGenerate: () => void;
+  onSelectClip: (clip: Clip) => void;
+  onRenameClip: (clipId: string, value: string) => void;
+  onDeleteClip: (clipId: string) => void;
 }) {
+  const selected = clips.find((clip) => clip.id === selectedClipId);
   return (
     <aside className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[430px] flex-col border-l border-[#e5e5e0] bg-white shadow-2xl">
       <div className="flex items-center gap-2 border-b border-[#eee] px-5 py-4">
@@ -974,14 +1112,14 @@ function RecordingPanel({
               </button>
             </>
           )}
-          {audio && !recording && (
+          {selected && !recording && (
             <button
               disabled={transcribing}
               onClick={onTranscribe}
               className="rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb]"
             >
               <FileAudio className="mr-1 inline h-4 w-4" />
-              {transcribing ? "轉錄中…" : "轉錄最新片段"}
+              {transcribing ? "轉錄中…" : "轉為逐字稿"}
             </button>
           )}
         </div>
@@ -990,35 +1128,26 @@ function RecordingPanel({
             {clips.map((clip, index) => (
               <div
                 key={clip.id}
-                className="flex items-center gap-3 rounded bg-[#fafaf8] px-3 py-2 text-xs"
+                role="button"
+                tabIndex={0}
+                onClick={() => onSelectClip(clip)}
+                className={`flex w-full items-center gap-3 rounded px-3 py-2 text-left text-xs ${selectedClipId === clip.id ? "bg-[#eeeaff] ring-1 ring-[#8a7bff]" : "bg-[#fafaf8]"}`}
               >
-                <span>
-                  錄音 {index + 1} · {fmt(clip.duration)}
-                </span>
+                <input value={clip.title} onClick={(event) => event.stopPropagation()} onChange={(event) => onRenameClip(clip.id, event.target.value)} className="w-20 min-w-0 border-0 bg-transparent text-xs font-medium outline-none" aria-label="錄音檔名稱" />
+                <span className="whitespace-nowrap text-[#777]">{fmt(clip.duration)}</span>
                 <audio controls className="h-7 flex-1" src={clip.url} />
+                <button onClick={(event) => { event.stopPropagation(); onDeleteClip(clip.id); }} className="rounded p-1 text-[#888] hover:bg-white hover:text-red-600" aria-label={`刪除 ${clip.title}`}><Trash2 className="h-3.5 w-3.5" /></button>
               </div>
             ))}
           </div>
         )}
-        <div className="mt-7 border-t border-[#eee] pt-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-sm font-semibold">逐字稿</h3>
-              <p className="mt-1 text-xs text-[#888]">可複製後自行貼到筆記。</p>
-            </div>
-            <button
-              onClick={onCopyTranscript}
-              disabled={!segments.length}
-              className="rounded-md border border-[#e4e4de] p-2 text-[#666] hover:bg-[#f7f7f4] disabled:opacity-40"
-              title="複製逐字稿"
-            >
-              <Copy className="h-4 w-4" />
-            </button>
-          </div>
-          <p className="mt-4 rounded-lg bg-[#fafaf8] p-3 text-sm leading-6 text-[#777]">
-            轉錄完成後，內容會顯示在「逐字稿」分頁；可在此複製，或切換分頁直接修正。
-          </p>
+        {selected && <div className="mt-7 border-t border-[#eee] pt-4">
+          <div className="flex gap-1 border-b border-[#eee] text-sm"><button onClick={() => onPanelTab("recording")} className={`px-2 py-2 ${panelTab === "recording" ? "border-b-2 border-[#715df2] text-[#604deb]" : "text-[#777]"}`}>錄音</button><button onClick={() => onPanelTab("transcript")} className={`px-2 py-2 ${panelTab === "transcript" ? "border-b-2 border-[#715df2] text-[#604deb]" : "text-[#777]"}`}>逐字稿</button><button onClick={() => onPanelTab("summary")} className={`px-2 py-2 ${panelTab === "summary" ? "border-b-2 border-[#715df2] text-[#604deb]" : "text-[#777]"}`}>AI 總結</button></div>
+          {panelTab === "recording" && <p className="mt-4 text-sm text-[#777]">選擇「轉為逐字稿」後，會在這個片段內產生可編輯逐字稿。</p>}
+          {panelTab === "transcript" && <div className="mt-4"><button disabled={!selected.transcript?.length || generating} onClick={onGenerate} className="mb-3 rounded-md bg-[#715df2] px-3 py-2 text-sm text-white disabled:opacity-40">{generating ? "生成中…" : "AI 生成會議紀錄"}</button>{selected.transcript?.length ? selected.transcript.map((item, index) => <p key={index} className="mb-2 rounded bg-[#fafaf8] p-3 text-sm leading-6"><b className="mr-2 text-[#715df2]">{fmt(item.start)}</b>{item.text}</p>) : <p className="py-6 text-sm text-[#999]">尚未產生逐字稿。</p>}</div>}
+          {panelTab === "summary" && <div className="mt-4"><button disabled={!selected.transcript?.length || generating} onClick={onGenerate} className="mb-3 rounded-md bg-[#715df2] px-3 py-2 text-sm text-white disabled:opacity-40">{generating ? "生成中…" : "AI 生成會議紀錄"}</button>{selected.summary ? <p className="whitespace-pre-wrap text-sm leading-7">{selected.summary}</p> : <p className="py-6 text-sm text-[#999]">尚未產生 AI 會議紀錄。</p>}</div>}
         </div>
+        }
       </div>
     </aside>
   );
