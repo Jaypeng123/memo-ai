@@ -46,6 +46,7 @@ type Clip = {
   transcript?: Segment[];
   summary?: string;
 };
+type NoteSession = { clips: Clip[]; segments: Segment[]; summary: string; seconds: number; selectedClipId: string | null };
 type PanelTab = "transcript" | "summary";
 type Tab = "notes" | "transcript" | "summary";
 type Menu = "none" | "insert" | "block" | "image";
@@ -69,7 +70,10 @@ export default function Home() {
     frame = useRef<number | null>(null),
     chunks = useRef<Blob[]>([]),
     images = useRef(new Map<string, File>()),
-    secondsRef = useRef(0);
+    secondsRef = useRef(0),
+    sessions = useRef(new Map<string, NoteSession>()),
+    recordingNoteId = useRef<string | null>(null),
+    activeNoteRef = useRef("first-note");
   const [tab, setTab] = useState<Tab>("notes"),
     [title, setTitle] = useState("未命名筆記"),
     [emoji, setEmoji] = useState("📄"),
@@ -122,6 +126,7 @@ export default function Home() {
     );
     return () => clearInterval(id);
   }, [recording, paused]);
+  useEffect(() => { activeNoteRef.current = activeNoteId; }, [activeNoteId]);
   useEffect(() => {
     if (!authLoaded || !isSignedIn) return;
     let cancelled = false;
@@ -243,12 +248,18 @@ export default function Home() {
   };
   const selectNote = (note: NoteItem) => {
     saveEditor();
+    sessions.current.set(activeNoteId, { clips, segments, summary, seconds, selectedClipId });
+    const nextSession = sessions.current.get(note.id);
     setActiveNoteId(note.id);
     setTitle(note.title);
     setEmoji(note.emoji || "📄");
     setEdited(new Date(note.editedAt));
     setRecordingPanel(false);
-    setSelectedClipId(null);
+    setClips(nextSession?.clips || []);
+    setSegments(nextSession?.segments || []);
+    setSummary(nextSession?.summary || "");
+    setSeconds(nextSession?.seconds || 0);
+    setSelectedClipId(nextSession?.selectedClipId || null);
     setWorkspaceView("note");
     if (editor.current) editor.current.innerHTML = note.contentHtml || "";
   };
@@ -341,6 +352,8 @@ export default function Home() {
       const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : undefined;
+      const noteId = activeNoteId;
+      recordingNoteId.current = noteId;
       const media = new MediaRecorder(
         source,
         mime ? { mimeType: mime } : undefined,
@@ -361,12 +374,18 @@ export default function Home() {
           blob,
           duration: secondsRef.current,
           createdAt: new Date().toISOString(),
-          title: `錄音 ${clips.length + 1}`,
+          title: `錄音`,
         };
-        setClips((current) => [...current, clip]);
-        setSelectedClipId(clip.id);
+        const existing = sessions.current.get(noteId)?.clips || (noteId === activeNoteRef.current ? clips : []);
+        const next = [...existing, clip];
+        sessions.current.set(noteId, { clips: next, segments: [], summary: "", seconds: secondsRef.current, selectedClipId: clip.id });
+        if (noteId === activeNoteRef.current) {
+          setClips(next);
+          setSelectedClipId(clip.id);
+        }
         setPanelTab("transcript");
         closeAudio();
+        recordingNoteId.current = null;
         setStatus("錄音片段已儲存。可繼續新增下一段錄音，或產生逐字稿。 ");
       };
       const ac = new AudioContext(),
@@ -418,6 +437,13 @@ export default function Home() {
     setRecording(false);
     setPaused(false);
   };
+  useEffect(() => {
+    const stopWhenHidden = () => {
+      if (document.visibilityState === "hidden" && recorder.current?.state === "recording") stop();
+    };
+    document.addEventListener("visibilitychange", stopWhenHidden);
+    return () => document.removeEventListener("visibilitychange", stopWhenHidden);
+  }, [recording]);
   const transcribe = async (): Promise<Segment[] | null> => {
     const clip = clips.find((item) => item.id === selectedClipId);
     if (!clip) return null;
@@ -656,7 +682,7 @@ export default function Home() {
             })}{" "}
             · 私人頁面
           </p>
-          <button onClick={() => setRecordingPanel(true)} className="mt-5 inline-flex items-center gap-2 text-sm text-[#777] hover:text-[#604deb]"><Mic className="h-4 w-4" />{recording ? "正在錄音" : clips.length ? `已儲存 ${clips.length} 段錄音` : "開始語音記錄"}</button>
+          <button onClick={() => setRecordingPanel(true)} className="mt-5 inline-flex items-center gap-2 text-sm text-[#777] hover:text-[#604deb]"><Mic className="h-4 w-4" />{recording && recordingNoteId.current === activeNoteId ? "正在錄音" : clips.length ? `已儲存 ${clips.length} 段錄音` : "開始語音記錄"}</button>
           {recordingPanel && (
             <>
             <button aria-label="關閉錄音面板" className="fixed inset-0 z-30 cursor-default bg-black/5" onClick={() => setRecordingPanel(false)} />
@@ -1423,6 +1449,9 @@ function BlockMenu({
             document.execCommand("formatBlock", false, "h4"),
           )}
           {item("轉換為待辦", () => onInsert("<p>☐ 待辦事項</p>"))}
+          {item("紫色文字", () => document.execCommand("foreColor", false, "#715df2"))}
+          {item("黃色螢光筆", () => document.execCommand("hiliteColor", false, "#fef3a8"))}
+          {item("清除文字樣式", () => document.execCommand("removeFormat"))}
           {item("複製目前區塊", () => document.execCommand("copy"))}
         </>
       )}
