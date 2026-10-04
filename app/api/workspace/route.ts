@@ -56,6 +56,10 @@ export async function PUT(request: Request) {
       await db`INSERT INTO memo_notes (id, user_id, folder_id, title, emoji, content_html, updated_at)
         VALUES (${note.id}::uuid, ${userId}, ${note.folderId || null}::uuid, ${note.title || "未命名筆記"}, ${note.emoji || "📄"}, ${note.contentHtml || ""}, ${note.editedAt || new Date().toISOString()}::timestamptz)`;
     }
+    // Clips are intentionally stored separately from the note snapshot. Remove
+    // metadata for notes the owner deleted so stale recordings never reappear.
+    await db`DELETE FROM memo_clips c WHERE c.user_id = ${userId}
+      AND NOT EXISTS (SELECT 1 FROM memo_notes n WHERE n.id = c.note_id AND n.user_id = ${userId})`;
     return Response.json({ ok: true });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "儲存失敗" }, { status: 401 });

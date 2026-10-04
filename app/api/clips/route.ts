@@ -8,6 +8,8 @@ export async function POST(request: Request) {
   const body = await request.json() as { id: string; noteId: string; blobUrl: string; duration: number };
   if (!body.id || !body.noteId || !body.blobUrl) return Response.json({ error: "缺少錄音資料" }, { status: 400 });
   await ensureWorkspaceSchema();
+  const ownerNote = (await sql()`SELECT id FROM memo_notes WHERE id = ${body.noteId}::uuid AND user_id = ${userId} LIMIT 1`) as unknown as { id: string }[];
+  if (!ownerNote.length) return Response.json({ error: "找不到所屬筆記" }, { status: 404 });
   await sql()`INSERT INTO memo_clips (id, user_id, note_id, blob_url, duration)
     VALUES (${body.id}::uuid, ${userId}, ${body.noteId}::uuid, ${body.blobUrl}, ${Math.max(0, Math.floor(body.duration || 0))})
     ON CONFLICT (id) DO NOTHING`;
