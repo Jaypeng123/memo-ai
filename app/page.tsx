@@ -2,6 +2,7 @@
 
 import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
 import { UserButton, useUser } from "@clerk/nextjs";
+import { upload } from "@vercel/blob/client";
 import {
   AudioLines,
   CircleStop,
@@ -39,7 +40,7 @@ type FolderItem = { id: string; name: string };
 type Clip = {
   id: string;
   url: string;
-  blob: Blob;
+  blob?: Blob;
   duration: number;
   createdAt: string;
   title: string;
@@ -132,7 +133,7 @@ export default function Home() {
     let cancelled = false;
     void fetch("/api/workspace")
       .then((res) => (res.ok ? (res.json() as Promise<{ notes: NoteItem[]; folders: FolderItem[] }>) : Promise.reject(new Error("載入失敗"))))
-      .then((data) => {
+      .then((data: { notes: NoteItem[]; folders: FolderItem[]; clips?: Array<{ id: string; noteId: string; duration: number; transcript: Segment[]; summary: string; createdAt: string }> }) => {
         if (cancelled) return;
         if (data.notes.length) {
           const first = data.notes[0];
@@ -142,6 +143,15 @@ export default function Home() {
           setTitle(first.title);
           setEmoji(first.emoji || "📄");
           setEdited(new Date(first.editedAt));
+          for (const note of data.notes) {
+            const clips = (data.clips || []).filter((clip) => clip.noteId === note.id).map((clip) => ({ ...clip, url: `/api/clips/${clip.id}/media`, title: "錄音" }));
+            sessions.current.set(note.id, { clips, segments: clips.flatMap((clip) => clip.transcript || []), summary: clips.at(-1)?.summary || "", seconds: clips.reduce((total, clip) => total + clip.duration, 0), selectedClipId: clips[0]?.id || null });
+          }
+          const firstSession = sessions.current.get(first.id);
+          setClips(firstSession?.clips || []);
+          setSegments(firstSession?.segments || []);
+          setSummary(firstSession?.summary || "");
+          setSelectedClipId(firstSession?.selectedClipId || null);
           if (editor.current) editor.current.innerHTML = first.contentHtml || "";
         }
       })
@@ -366,11 +376,11 @@ export default function Home() {
         const blob = new Blob(chunks.current, {
           type: media.mimeType || "audio/webm",
         });
-        const url = URL.createObjectURL(blob);
-        setAudio({ blob, url });
+        const localUrl = URL.createObjectURL(blob);
+        setAudio({ blob, url: localUrl });
         const clip = {
           id: crypto.randomUUID(),
-          url,
+          url: localUrl,
           blob,
           duration: secondsRef.current,
           createdAt: new Date().toISOString(),
@@ -383,6 +393,14 @@ export default function Home() {
           setClips(next);
           setSelectedClipId(clip.id);
         }
+        void (async () => {
+          try {
+            const remote = await upload(`recordings/${noteId}/${clip.id}.webm`, blob, { access: "private", handleUploadUrl: "/api/upload" });
+            await fetch("/api/clips", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: clip.id, noteId, blobUrl: remote.url, duration: clip.duration }) });
+          } catch {
+            setError("錄音已暫存於本次工作階段，但上傳至私有儲存空間失敗。 ");
+          }
+        })();
         setPanelTab("transcript");
         closeAudio();
         recordingNoteId.current = null;
@@ -453,8 +471,8 @@ export default function Home() {
       const body = new FormData();
       body.append(
         "audio",
-        new File([clip.blob], "memo-recording.webm", {
-          type: clip.blob.type || "audio/webm",
+        new File([clip.blob || await (await fetch(clip.url)).blob()], "memo-recording.webm", {
+          type: clip.blob?.type || "audio/webm",
         }),
       );
       body.append("mode", "accurate");
@@ -471,6 +489,7 @@ export default function Home() {
           item.id === clip.id ? { ...item, transcript } : item,
         ),
       );
+      void fetch("/api/clips", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: clip.id, transcript, summary: clip.summary || "" }) });
       setPanelTab("transcript");
       setStatus(
         data.transcript?.length
@@ -518,6 +537,7 @@ export default function Home() {
             item.id === clip.id ? { ...item, summary: nextSummary } : item,
           ),
         );
+      if (clip) void fetch("/api/clips", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: clip.id, transcript: source, summary: nextSummary }) });
       setPanelTab("summary");
       setStatus(
         data.empty
@@ -717,6 +737,7 @@ export default function Home() {
                   if (removed) URL.revokeObjectURL(removed.url);
                   return current.filter((clip) => clip.id !== clipId);
                 });
+                void fetch("/api/clips", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: clipId }) });
                 if (selectedClipId === clipId) { setSelectedClipId(null); setSegments([]); setSummary(""); }
               }}
             />

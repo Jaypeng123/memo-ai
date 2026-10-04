@@ -24,12 +24,14 @@ export async function GET() {
   try {
     const userId = await user();
     const db = sql();
-    const [folders, notes] = await Promise.all([
+    const [folders, notes, clips] = await Promise.all([
       db`SELECT id, name FROM memo_folders WHERE user_id = ${userId} ORDER BY created_at ASC`,
       db`SELECT id, title, emoji, folder_id AS "folderId", content_html AS "contentHtml", updated_at AS "editedAt"
          FROM memo_notes WHERE user_id = ${userId} ORDER BY updated_at DESC`,
+      db`SELECT id, note_id AS "noteId", duration, transcript, summary, created_at AS "createdAt"
+         FROM memo_clips WHERE user_id = ${userId} ORDER BY created_at ASC`,
     ]);
-    return Response.json({ folders, notes });
+    return Response.json({ folders, notes, clips });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "載入失敗" }, { status: 401 });
   }
