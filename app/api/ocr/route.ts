@@ -33,8 +33,8 @@ export async function POST(request: Request) {
       temperature: 0,
       max_tokens: 4000,
       messages: [
-        { role: "system", content: "你是精準 OCR 助手。只轉寫圖片中可辨識的文字，保留原本段落、標題層級與清單閱讀順序。不要摘要、翻譯、補字、猜測或加入任何說明。使用繁體中文輸出（除非原文是其他語言）。" },
-        { role: "user", content: [{ type: "text", text: "請將這張圖片轉成可編輯的純文字。" }, { type: "image_url", image_url: { url: dataUrl } }] },
+        { role: "system", content: "你是精準 OCR 助手。只轉寫圖片中可辨識的文字，保留原本段落、標題層級、相對文字大小與清單閱讀順序。以 Markdown 表達層級：最大標題用 #、次標題用 ##、依視覺比例最多用到 ####；清單保留 - 或 1.。不要摘要、翻譯、補字、猜測或加入任何說明。使用繁體中文輸出（除非原文是其他語言）。" },
+        { role: "user", content: [{ type: "text", text: "請將這張圖片轉成可編輯文字，依圖片中文字的相對大小輸出正確 Markdown 標題層級。" }, { type: "image_url", image_url: { url: dataUrl } }] },
       ],
     }),
   });
