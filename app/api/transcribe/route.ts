@@ -1,4 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
+import { get } from "@vercel/blob";
+import { ensureWorkspaceSchema, sql } from "@/lib/database";
 
 type Segment = { start?: number; end?: number; speaker?: string; text?: string };
 
@@ -7,9 +9,26 @@ export async function POST(request: Request) {
   if (!userId) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return Response.json({ error: "轉錄服務尚未設定。" }, { status: 503 });
-  const incoming = await request.formData();
-  const audio = incoming.get("audio");
-  if (!(audio instanceof File)) return Response.json({ error: "找不到錄音檔。" }, { status: 400 });
+  let audio: File;
+  const contentType = request.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const { clipId } = (await request.json()) as { clipId?: string };
+    if (!clipId) return Response.json({ error: "找不到錄音檔。" }, { status: 400 });
+    await ensureWorkspaceSchema();
+    const rows = (await sql()`SELECT blob_url FROM memo_clips WHERE id = ${clipId}::uuid AND user_id = ${userId} LIMIT 1`) as unknown as { blob_url?: string }[];
+    if (!rows[0]?.blob_url) return Response.json({ error: "錄音尚未完成雲端同步，請稍候或按重試。" }, { status: 409 });
+    const stored = await get(rows[0].blob_url, { access: "private", token: process.env.MEMO_FILES_READ_WRITE_TOKEN });
+    if (!stored?.stream || !stored.blob.size) return Response.json({ error: "找不到雲端錄音檔。" }, { status: 404 });
+    if (stored.blob.size > 25 * 1024 * 1024) return Response.json({ error: "音訊或影片超過轉錄服務 25MB 上限。請先裁切或壓縮後再試。" }, { status: 413 });
+    const blob = await new Response(stored.stream).blob();
+    audio = new File([blob], stored.blob.pathname.split("/").at(-1) || "recording.webm", { type: stored.blob.contentType || "audio/webm" });
+  } else {
+    const incoming = await request.formData();
+    const incomingAudio = incoming.get("audio");
+    if (!(incomingAudio instanceof File)) return Response.json({ error: "找不到錄音檔。" }, { status: 400 });
+    if (incomingAudio.size > 25 * 1024 * 1024) return Response.json({ error: "音訊或影片超過轉錄服務 25MB 上限。請先裁切或壓縮後再試。" }, { status: 413 });
+    audio = incomingAudio;
+  }
   const body = new FormData();
   body.append("file", audio, audio.name || "recording.webm");
   // Do not supply a prose "hint" to the transcription endpoint.  For a very

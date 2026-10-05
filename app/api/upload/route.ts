@@ -11,11 +11,11 @@ export async function POST(request: Request) {
       request,
       token: process.env.MEMO_FILES_READ_WRITE_TOKEN,
       onBeforeGenerateToken: async (pathname) => ({
-        allowedContentTypes: ["image/*", "audio/*", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+        allowedContentTypes: ["image/*", "audio/*", "video/mp4", "video/webm", "video/quicktime", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+        maximumSizeInBytes: 100 * 1024 * 1024,
         addRandomSuffix: true,
         tokenPayload: JSON.stringify({ userId, pathname }),
       }),
-      onUploadCompleted: async () => {},
     });
     return Response.json(jsonResponse);
   } catch (error) {

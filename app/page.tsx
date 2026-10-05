@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, ReactNode, useEffect, useRef, useState } from "react";
 import { UserButton, useUser } from "@clerk/nextjs";
 import { upload } from "@vercel/blob/client";
 import { pendingRecordings, removePendingRecording, savePendingRecording } from "@/lib/pending-recordings";
@@ -422,6 +422,8 @@ export default function Home() {
       const remote = await upload(`recordings/${noteId}/${clip.id}.webm`, clip.blob, {
         access: "private",
         handleUploadUrl: "/api/upload",
+        contentType: clip.blob.type || "audio/webm",
+        multipart: true,
       });
       const metadataResponse = await fetch("/api/clips", {
         method: "POST",
@@ -545,11 +547,17 @@ export default function Home() {
   const importAudio = async (file: File) => {
     const noteId = activeNoteId;
     const blob = file.slice(0, file.size, file.type || "audio/mpeg");
+    const url = URL.createObjectURL(blob);
+    const duration = await new Promise<number>((resolve) => {
+      const probe = new Audio(url);
+      probe.onloadedmetadata = () => resolve(Number.isFinite(probe.duration) ? Math.round(probe.duration) : 0);
+      probe.onerror = () => resolve(0);
+    });
     const clip: Clip = {
       id: crypto.randomUUID(),
-      url: URL.createObjectURL(blob),
+      url,
       blob,
-      duration: 0,
+      duration,
       createdAt: new Date().toISOString(),
       title: "錄音",
     };
@@ -560,7 +568,7 @@ export default function Home() {
     setSelectedClipId(clip.id);
     setSyncStates((current) => ({ ...current, [clip.id]: "local" }));
     try {
-      await savePendingRecording({ id: clip.id, noteId, blob, duration: 0, createdAt: clip.createdAt });
+      await savePendingRecording({ id: clip.id, noteId, blob, duration, createdAt: clip.createdAt });
       void syncRecording(clip, noteId);
       setStatus("音訊檔已安全保存於本機，正在同步至雲端。 ");
     } catch (cause) {
@@ -587,19 +595,22 @@ export default function Home() {
     setTranscribing(true);
     setError("");
     try {
-      const body = new FormData();
-      body.append(
-        "audio",
-        new File([clip.blob || await (await fetch(clip.url)).blob()], "memo-recording.webm", {
-          type: clip.blob?.type || "audio/webm",
-        }),
-      );
-      body.append("mode", "accurate");
-      const res = await fetch("/api/transcribe", { method: "POST", body });
-      const data = (await res.json()) as {
+      // After sync, ask the server to stream the private Blob directly to the
+      // transcription provider. This avoids browser/Vercel request-size limits
+      // for uploaded audio and video.
+      const synced = !clip.blob || syncStates[clip.id] === "synced";
+      const res = synced
+        ? await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clipId: clip.id }) })
+        : await (() => {
+            const body = new FormData();
+            body.append("audio", new File([clip.blob!], "memo-recording.webm", { type: clip.blob?.type || "audio/webm" }));
+            return fetch("/api/transcribe", { method: "POST", body });
+          })();
+      const raw = await res.text();
+      const data = (() => { try { return JSON.parse(raw) as {
         error?: string;
         transcript?: Segment[];
-      };
+      }; } catch { return { error: res.status === 413 ? "檔案過大，請裁切或壓縮後再試。" : "轉錄服務回傳非預期內容，請稍後重試。" }; } })();
       if (!res.ok) throw new Error(data.error || "轉錄失敗");
       const transcript = data.transcript || [];
       setSegments(transcript);
@@ -645,11 +656,12 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transcript }),
       });
-      const data = (await res.json()) as {
+      const raw = await res.text();
+      const data = (() => { try { return JSON.parse(raw) as {
         error?: string;
         notes?: string;
         empty?: boolean;
-      };
+      }; } catch { return { error: "AI 服務回傳非預期內容，請稍後重試。" }; } })();
       if (!res.ok) throw new Error(data.error || "AI 生成失敗。");
       const nextSummary = data.empty ? "" : data.notes || "";
       setSummary(nextSummary);
@@ -891,7 +903,7 @@ export default function Home() {
                 if (selectedClipId === clipId) { setSelectedClipId(null); setSegments([]); setSummary(""); }
               }}
             />
-            <input ref={audioInput} type="file" accept="audio/*" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importAudio(file); event.currentTarget.value = ""; }} />
+            <input ref={audioInput} type="file" accept="audio/*,video/mp4,video/webm,video/quicktime" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importAudio(file); event.currentTarget.value = ""; }} />
             </>
           )}
           <nav className="hidden mt-7 items-center gap-1 border-b border-[#e9e9e4]">
@@ -1313,6 +1325,8 @@ function RecordingPanel({
 }) {
   const selected = clips.find((clip) => clip.id === selectedClipId);
   const players = useRef<Record<string, HTMLAudioElement | null>>({});
+  const [playingClipId, setPlayingClipId] = useState<string | null>(null);
+  const [playheads, setPlayheads] = useState<Record<string, number>>({});
   const hasTranscript = clips.some((clip) => Boolean(clip.transcript?.length));
   const syncLabel = (clip: Clip) => {
     const state = syncStates[clip.id];
@@ -1360,7 +1374,7 @@ function RecordingPanel({
           {!recording && (
             <>
               <button onClick={onStart} className="rounded-md bg-[#2f2f2f] px-3 py-2 text-sm text-white"><Mic className="mr-1 inline h-4 w-4" />開始錄音</button>
-              <button onClick={onUploadAudio} className="rounded-md border border-[#deded8] px-3 py-2 text-sm text-[#444]"><FileAudio className="mr-1 inline h-4 w-4" />上傳音訊</button>
+              <button onClick={onUploadAudio} className="rounded-md border border-[#deded8] px-3 py-2 text-sm text-[#444]"><FileAudio className="mr-1 inline h-4 w-4" />上傳音訊／影片</button>
             </>
           )}
           {recording && (
@@ -1395,7 +1409,9 @@ function RecordingPanel({
                 <b className="w-12 whitespace-nowrap text-xs font-medium">錄音 {index + 1}</b>
                 <span className="whitespace-nowrap text-[#777]">{fmt(clip.duration)}</span>
                 <span className={`ml-auto whitespace-nowrap text-[11px] ${syncStates[clip.id] === "failed" ? "text-red-600" : "text-[#777]"}`}>{syncLabel(clip)}</span>
-                <audio ref={(node) => { players.current[clip.id] = node; }} controls controlsList="nodownload noplaybackrate" className="h-7 max-w-24" src={clip.url} />
+                <button onClick={(event) => { event.stopPropagation(); const player = players.current[clip.id]; if (!player) return; if (player.paused) { void player.play(); } else player.pause(); }} className="grid h-7 w-7 place-items-center rounded-full bg-white text-xs shadow-sm" aria-label={playingClipId === clip.id ? "暫停" : "播放"}>{playingClipId === clip.id ? "Ⅱ" : "▶"}</button>
+                <input aria-label={`${clip.title} 播放進度`} type="range" min="0" max={Math.max(clip.duration, 1)} step="0.1" value={Math.min(playheads[clip.id] || 0, Math.max(clip.duration, 1))} onClick={(event) => event.stopPropagation()} onChange={(event) => { const player = players.current[clip.id]; const value = Number(event.target.value); if (player) player.currentTime = value; setPlayheads((current) => ({ ...current, [clip.id]: value })); }} className="w-20 accent-[#715df2]" />
+                <audio ref={(node) => { players.current[clip.id] = node; }} onPlay={() => setPlayingClipId(clip.id)} onPause={() => setPlayingClipId((current) => current === clip.id ? null : current)} onEnded={() => setPlayingClipId(null)} onTimeUpdate={(event) => setPlayheads((current) => ({ ...current, [clip.id]: event.currentTarget.currentTime }))} className="hidden" src={clip.url} />
                 {syncStates[clip.id] === "failed" && <button onClick={(event) => { event.stopPropagation(); onRetrySync(clip); }} className="rounded border border-red-200 px-1.5 py-1 text-[11px] text-red-700">重試</button>}
                 <button onClick={(event) => { event.stopPropagation(); onDeleteClip(clip.id); }} className="rounded p-1 text-[#888] hover:bg-white hover:text-red-600" aria-label={`刪除 ${clip.title}`}><Trash2 className="h-3.5 w-3.5" /></button>
               </div>
@@ -1404,13 +1420,16 @@ function RecordingPanel({
         )}
         {selected && <div className="mt-7 border-t border-[#eee] pt-4">
           <div className="flex gap-1 border-b border-[#eee] text-sm"><button onClick={() => onPanelTab("transcript")} className={`px-2 py-2 ${panelTab === "transcript" ? "border-b-2 border-[#715df2] text-[#604deb]" : "text-[#777]"}`}>逐字稿</button><button onClick={() => onPanelTab("summary")} className={`px-2 py-2 ${panelTab === "summary" ? "border-b-2 border-[#715df2] text-[#604deb]" : "text-[#777]"}`}>AI 總結</button></div>
-          {panelTab === "transcript" && <div className="mt-4"><button disabled={transcribing} onClick={onTranscribe} className="mb-3 rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb]">{transcribing ? "轉錄中…" : "轉為逐字稿"}</button>{selected.transcript?.length ? selected.transcript.map((item, index) => <div key={index} className="mb-2 rounded bg-[#fafaf8] p-3 text-sm leading-6"><button onClick={() => { const player = players.current[selected.id]; if (player) { player.currentTime = item.start; void player.play(); } }} className="mr-2 font-mono text-[#715df2] hover:underline" title="從此時間播放">{fmt(item.start)}</button><b className="mr-2 text-[#444]">{item.speaker}</b>{item.text}</div>) : <p className="py-6 text-sm text-[#999]">尚未產生逐字稿。</p>}</div>}
-          {panelTab === "summary" && <div className="mt-4"><button disabled={generating || !hasTranscript} onClick={onGenerate} title={hasTranscript ? "整合此筆記的所有逐字稿" : "請先產生逐字稿"} className="mb-3 rounded-md bg-[#715df2] px-3 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-40">{generating ? "生成中…" : "AI 生成會議紀錄"}</button>{!hasTranscript && <p className="mb-3 text-xs text-[#999]">請先產生逐字稿</p>}{selected.summary ? <><div className="mb-3 flex gap-2"><button onClick={onInsertSummary} className="rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb]">插入至筆記</button><button onClick={() => navigator.clipboard.writeText(selected.summary || "")} className="rounded-md border px-3 py-2 text-sm">複製</button></div><p className="whitespace-pre-wrap text-sm leading-7">{selected.summary}</p></> : <p className="py-6 text-sm text-[#999]">尚未產生 AI 會議紀錄。</p>}</div>}
+          {panelTab === "transcript" && <div className="mt-4"><button disabled={transcribing} onClick={onTranscribe} className="mb-3 rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb]">{transcribing ? "轉錄中…" : "轉為逐字稿"}</button>{selected.transcript?.length ? selected.transcript.map((item, index) => <div key={index} className="mb-2 rounded bg-[#fafaf8] p-3 text-sm leading-6"><button onClick={() => { const player = players.current[selected.id]; if (player) { player.currentTime = item.start; void player.play(); } }} className="mr-2 font-mono text-[#715df2] hover:underline" title="從此時間播放">{fmt(item.start)}</button><b className="mr-2 text-[#444]">{item.speaker}</b>{item.text}</div>) : <PanelEmpty icon={<FileAudio className="h-6 w-6" />} title="尚未產生逐字稿" description="選擇這段錄音後，開始轉錄即可在這裡查看內容。" />}</div>}
+          {panelTab === "summary" && <div className="mt-4"><button disabled={generating || !hasTranscript} onClick={onGenerate} title={hasTranscript ? "整合此筆記的所有逐字稿" : "請先產生逐字稿"} className="mb-3 rounded-md bg-[#715df2] px-3 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-40">{generating ? "生成中…" : "AI 生成會議紀錄"}</button>{!hasTranscript && <p className="mb-3 text-xs text-[#999]">請先產生逐字稿</p>}{selected.summary ? <><div className="mb-3 flex gap-2"><button onClick={onInsertSummary} className="rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb]">插入至筆記</button><button onClick={() => navigator.clipboard.writeText(selected.summary || "")} className="rounded-md border px-3 py-2 text-sm">複製</button></div><p className="whitespace-pre-wrap text-sm leading-7">{selected.summary}</p></> : <PanelEmpty icon={<Sparkles className="h-6 w-6" />} title="尚未產生 AI 會議紀錄" description={hasTranscript ? "AI 會依據這筆筆記的逐字稿整理重點。" : "先完成逐字稿，才能生成可靠的會議紀錄。"} />}</div>}
         </div>
         }
       </div>
     </aside>
   );
+}
+function PanelEmpty({ icon, title, description }: { icon: ReactNode; title: string; description: string }) {
+  return <div className="grid min-h-44 place-items-center rounded-lg bg-[#fafaf8] px-6 py-8 text-center"><div><span className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-full bg-[#eeeaff] text-[#715df2]">{icon}</span><b className="block text-sm text-[#555]">{title}</b><p className="mt-2 text-xs leading-5 text-[#999]">{description}</p></div></div>;
 }
 function Tab({
   active,
