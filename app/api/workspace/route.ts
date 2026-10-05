@@ -9,6 +9,9 @@ type NoteInput = {
   folderId?: string;
   contentHtml?: string;
   editedAt?: string;
+  noteType?: "note" | "meeting";
+  properties?: Record<string, string>;
+  isFavorite?: boolean;
 };
 
 export const runtime = "nodejs";
@@ -26,7 +29,7 @@ export async function GET() {
     const db = sql();
     const [folders, notes, clips] = await Promise.all([
       db`SELECT id, name FROM memo_folders WHERE user_id = ${userId} ORDER BY created_at ASC`,
-      db`SELECT id, title, emoji, folder_id AS "folderId", content_html AS "contentHtml", updated_at AS "editedAt"
+      db`SELECT id, title, emoji, folder_id AS "folderId", note_type AS "noteType", properties, is_favorite AS "isFavorite", content_html AS "contentHtml", updated_at AS "editedAt"
          FROM memo_notes WHERE user_id = ${userId} ORDER BY updated_at DESC`,
       db`SELECT id, note_id AS "noteId", duration, transcript, summary, created_at AS "createdAt"
          FROM memo_clips WHERE user_id = ${userId} ORDER BY created_at ASC`,
@@ -53,8 +56,8 @@ export async function PUT(request: Request) {
       await db`INSERT INTO memo_folders (id, user_id, name) VALUES (${folder.id}::uuid, ${userId}, ${folder.name})`;
     }
     for (const note of notes) {
-      await db`INSERT INTO memo_notes (id, user_id, folder_id, title, emoji, content_html, updated_at)
-        VALUES (${note.id}::uuid, ${userId}, ${note.folderId || null}::uuid, ${note.title || "未命名筆記"}, ${note.emoji || "📄"}, ${note.contentHtml || ""}, ${note.editedAt || new Date().toISOString()}::timestamptz)`;
+      await db`INSERT INTO memo_notes (id, user_id, folder_id, title, emoji, note_type, properties, is_favorite, content_html, updated_at)
+        VALUES (${note.id}::uuid, ${userId}, ${note.folderId || null}::uuid, ${note.title || "未命名筆記"}, ${note.emoji || "📄"}, ${note.noteType === "meeting" ? "meeting" : "note"}, ${JSON.stringify(note.properties || {})}::jsonb, ${Boolean(note.isFavorite)}, ${note.contentHtml || ""}, ${note.editedAt || new Date().toISOString()}::timestamptz)`;
     }
     // Clips are intentionally stored separately from the note snapshot. Remove
     // metadata for notes the owner deleted so stale recordings never reappear.

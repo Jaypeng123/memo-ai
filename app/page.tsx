@@ -36,6 +36,9 @@ type NoteItem = {
   folderId?: string;
   emoji?: string;
   contentHtml?: string;
+  noteType?: "note" | "meeting";
+  properties?: Record<string, string>;
+  isFavorite?: boolean;
 };
 type FolderItem = { id: string; name: string };
 type Clip = {
@@ -48,6 +51,7 @@ type Clip = {
   transcript?: Segment[];
   summary?: string;
 };
+type StoredClip = { id: string; noteId: string; transcript?: Segment[]; summary?: string };
 type SyncState = "local" | "syncing" | "failed" | "synced";
 type NoteSession = { clips: Clip[]; segments: Segment[]; summary: string; seconds: number; selectedClipId: string | null };
 type PanelTab = "transcript" | "summary";
@@ -97,6 +101,7 @@ export default function Home() {
     [activeFolder, setActiveFolder] = useState<string | "all">("all"),
     [workspaceView, setWorkspaceView] = useState<"note" | "all">("note"),
     [searchQuery, setSearchQuery] = useState("");
+  const [workspaceClips, setWorkspaceClips] = useState<StoredClip[]>([]);
   const [recording, setRecording] = useState(false),
     [paused, setPaused] = useState(false),
     [seconds, setSeconds] = useState(0),
@@ -121,6 +126,12 @@ export default function Home() {
     [error, setError] = useState(""),
     [status, setStatus] = useState("可直接寫筆記；需要時再開始錄音。");
   const workspaceRef = useRef({ notes, folders });
+  const activeNote = notes.find((note) => note.id === activeNoteId);
+  const updateActiveNote = (patch: Partial<NoteItem>) => {
+    const now = new Date();
+    setEdited(now);
+    setNotes((current) => current.map((note) => note.id === activeNoteId ? { ...note, ...patch, editedAt: now.toISOString() } : note));
+  };
 
   useEffect(() => {
     if (!recording || paused) return;
@@ -147,6 +158,7 @@ export default function Home() {
           const first = data.notes[0];
           setNotes(data.notes);
           setFolders(data.folders);
+          setWorkspaceClips(data.clips || []);
           setActiveNoteId(first.id);
           setTitle(first.title);
           setEmoji(first.emoji || "📄");
@@ -278,6 +290,8 @@ export default function Home() {
       folderId: activeFolder === "all" ? undefined : activeFolder,
       emoji: "📄",
       contentHtml: "",
+      noteType: "note" as const,
+      properties: {},
     };
     setNotes((current) => [note, ...current]);
     setActiveNoteId(note.id);
@@ -594,6 +608,7 @@ export default function Home() {
           item.id === clip.id ? { ...item, transcript } : item,
         ),
       );
+      setWorkspaceClips((current) => current.map((item) => item.id === clip.id ? { ...item, transcript } : item));
       void fetch("/api/clips", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: clip.id, transcript, summary: clip.summary || "" }) });
       setPanelTab("transcript");
       setStatus(
@@ -644,6 +659,7 @@ export default function Home() {
             item.id === clip.id ? { ...item, summary: nextSummary } : item,
           ),
         );
+      if (clip) setWorkspaceClips((current) => current.map((item) => item.id === clip.id ? { ...item, summary: nextSummary } : item));
       if (clip) void fetch("/api/clips", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: clip.id, transcript: clip.transcript || [], summary: nextSummary }) });
       setPanelTab("summary");
       setStatus(
@@ -790,7 +806,7 @@ export default function Home() {
           <button onClick={() => setRecordingPanel(true)} className="ml-auto rounded p-2 text-[#715df2] hover:bg-[#f0edff]" title={clips.length ? "開啟語音記錄" : "開始或上傳語音"}><PanelRight className="h-5 w-5" /></button>
         </header>
         {workspaceView === "all" ? (
-          <AllFiles notes={notes} folders={folders} query={searchQuery} onOpen={selectNote} onMove={moveNote} />
+          <AllFiles notes={notes} folders={folders} clips={workspaceClips} query={searchQuery} onOpen={selectNote} onMove={moveNote} />
         ) : (
         <div className="mx-auto max-w-4xl px-10 py-9">
           <div className="flex items-center gap-3">
@@ -823,6 +839,13 @@ export default function Home() {
             })}{" "}
             · 私人頁面
           </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[#777]">
+            <select value={activeNote?.noteType || "note"} onChange={(event) => updateActiveNote({ noteType: event.target.value as "note" | "meeting" })} className="rounded-md border border-[#e5e5df] bg-white px-2 py-1">
+              <option value="note">筆記</option>
+              <option value="meeting">會議</option>
+            </select>
+            {activeNote?.noteType === "meeting" && <details className="rounded-md border border-[#e5e5df] bg-white px-2 py-1"><summary className="cursor-pointer">會議屬性</summary><div className="mt-2 grid gap-2 sm:grid-cols-2"><label>日期<input type="date" value={activeNote.properties?.date || ""} onChange={(event) => updateActiveNote({ properties: { ...activeNote.properties, date: event.target.value } })} className="ml-1 rounded border px-1" /></label><label>參與者<input value={activeNote.properties?.participants || ""} onChange={(event) => updateActiveNote({ properties: { ...activeNote.properties, participants: event.target.value } })} placeholder="Jay, …" className="ml-1 w-24 rounded border px-1" /></label><label>專案<input value={activeNote.properties?.project || ""} onChange={(event) => updateActiveNote({ properties: { ...activeNote.properties, project: event.target.value } })} className="ml-1 w-24 rounded border px-1" /></label><label>狀態<input value={activeNote.properties?.status || ""} onChange={(event) => updateActiveNote({ properties: { ...activeNote.properties, status: event.target.value } })} className="ml-1 w-24 rounded border px-1" /></label></div></details>}
+          </div>
           <button onClick={() => setRecordingPanel(true)} className="mt-5 inline-flex items-center gap-2 text-sm text-[#777] hover:text-[#604deb]"><Mic className="h-4 w-4" />{recording && recordingNoteId.current === activeNoteId ? "正在錄音" : clips.length ? `已儲存 ${clips.length} 段錄音` : "開始語音記錄"}</button>
           {recordingPanel && (
             <>
@@ -1091,10 +1114,15 @@ export default function Home() {
   );
 }
 
-function AllFiles({ notes, folders, query, onOpen, onMove }: { notes: NoteItem[]; folders: FolderItem[]; query: string; onOpen: (note: NoteItem) => void; onMove: (id: string, folderId?: string) => void }) {
+function AllFiles({ notes, folders, clips, query, onOpen, onMove }: { notes: NoteItem[]; folders: FolderItem[]; clips: StoredClip[]; query: string; onOpen: (note: NoteItem) => void; onMove: (id: string, folderId?: string) => void }) {
   const [view, setView] = useState<"grid" | "list">("grid");
   const normalized = query.trim().toLocaleLowerCase();
-  const visible = notes.filter((note) => note.title.toLocaleLowerCase().includes(normalized));
+  const visible = notes.filter((note) => {
+    if (!normalized) return true;
+    const clipText = clips.filter((clip) => clip.noteId === note.id).flatMap((clip) => [clip.summary || "", ...(clip.transcript || []).map((segment) => segment.text)]).join(" ");
+    const haystack = [note.title, note.contentHtml?.replace(/<[^>]*>/g, "") || "", folders.find((folder) => folder.id === note.folderId)?.name || "", clipText].join(" ").toLocaleLowerCase();
+    return haystack.includes(normalized);
+  });
   return <div className="mx-auto max-w-5xl px-10 py-9"><div className="flex items-center"><div><h1 className="text-3xl font-bold">所有檔案</h1><p className="mt-2 text-sm text-[#888]">以資料夾管理筆記；可直接拖曳筆記至資料夾。</p></div><div className="ml-auto flex rounded-md border border-[#e4e4df] p-1 text-xs"><button onClick={() => setView("grid")} className={`rounded px-2 py-1 ${view === "grid" ? "bg-[#ece9ff] text-[#604deb]" : ""}`}>網格</button><button onClick={() => setView("list")} className={`rounded px-2 py-1 ${view === "list" ? "bg-[#ece9ff] text-[#604deb]" : ""}`}>列表</button></div></div><div className={`mt-7 ${view === "grid" ? "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" : "space-y-2"}`}>{folders.map((folder) => <div key={folder.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const id = event.dataTransfer.getData("text/memo-note"); if (id) onMove(id, folder.id); }} className="rounded-xl border border-[#e8e8e3] bg-[#fafaf8] p-4 transition hover:border-[#a99cff]"><div className="flex items-center gap-2 text-sm font-medium"><Folder className="h-5 w-5 text-[#715df2]" />{folder.name}</div><p className="mt-2 text-xs text-[#999]">{notes.filter((note) => note.folderId === folder.id).length} 筆筆記 · 拖曳至此歸檔</p></div>)}</div><h2 className="mt-10 text-lg font-semibold">最近筆記</h2><div className="mt-3 space-y-2">{visible.map((note) => <div key={note.id} draggable onDragStart={(event) => event.dataTransfer.setData("text/memo-note", note.id)} className="flex items-center rounded-lg border border-[#e8e8e3] px-4 py-3 hover:bg-[#fafaf8]"><button onClick={() => onOpen(note)} className="min-w-0 flex-1 text-left"><b className="block truncate"><span className="mr-2">{note.emoji || "📄"}</span>{note.title}</b><span className="text-xs text-[#999]">{folders.find((folder) => folder.id === note.folderId)?.name || "未歸檔"} · {new Date(note.editedAt).toLocaleDateString("zh-TW")}</span></button><select aria-label="移動筆記至資料夾" value={note.folderId || ""} onChange={(event) => onMove(note.id, event.target.value || undefined)} className="rounded border border-[#e3e3dd] bg-white px-2 py-1 text-xs"><option value="">未歸檔</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></div>)}</div>{!visible.length && <EmptyState title="找不到檔案" description="試著改用其他關鍵字搜尋。" />}</div>;
 }
 function Sidebar({
