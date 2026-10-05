@@ -4,8 +4,8 @@ import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 export async function POST(request: Request) {
   const { userId } = await auth();
   if (!userId) return Response.json({ error: "Unauthorized" }, { status: 401 });
-  const body = (await request.json()) as HandleUploadBody;
   try {
+    const body = (await request.json()) as HandleUploadBody;
     const jsonResponse = await handleUpload({
       body,
       request,
@@ -19,6 +19,9 @@ export async function POST(request: Request) {
     });
     return Response.json(jsonResponse);
   } catch (error) {
+    // Blob's client protocol expects JSON. Always return JSON even if a proxy
+    // or malformed request reaches this route, so callers never attempt to
+    // parse a plain-text error page as JSON.
     return Response.json({ error: error instanceof Error ? error.message : "上傳設定失敗" }, { status: 400 });
   }
 }

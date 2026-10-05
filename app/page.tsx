@@ -7,9 +7,11 @@ import { pendingRecordings, removePendingRecording, savePendingRecording } from 
 import {
   AudioLines,
   CircleStop,
+  ChevronRight,
   Copy,
   FileAudio,
   Folder,
+  Grid2X2,
   GripVertical,
   ImagePlus,
   LayoutList,
@@ -18,6 +20,7 @@ import {
   Mic,
   Pause,
   PanelRight,
+  Pin,
   Plus,
   Quote,
   Search,
@@ -598,14 +601,18 @@ export default function Home() {
       // After sync, ask the server to stream the private Blob directly to the
       // transcription provider. This avoids browser/Vercel request-size limits
       // for uploaded audio and video.
-      const synced = !clip.blob || syncStates[clip.id] === "synced";
-      const res = synced
-        ? await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clipId: clip.id }) })
-        : await (() => {
-            const body = new FormData();
-            body.append("audio", new File([clip.blob!], "memo-recording.webm", { type: clip.blob?.type || "audio/webm" }));
-            return fetch("/api/transcribe", { method: "POST", body });
-          })();
+      // Never post the recording binary through this route. Vercel can reject
+      // a large request with a plain-text 413 page, which used to become the
+      // misleading “Unexpected token … is not valid JSON” error. The private
+      // Blob is the durable source and is streamed server-to-server instead.
+      if (syncStates[clip.id] !== "synced" && clip.blob) {
+        throw new Error("錄音正在同步至雲端。請等候同步完成，或按「重試」後再轉為逐字稿。");
+      }
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clipId: clip.id }),
+      });
       const raw = await res.text();
       const data = (() => { try { return JSON.parse(raw) as {
         error?: string;
@@ -811,14 +818,16 @@ export default function Home() {
         onFolderSelect={setActiveFolder}
         onAllFiles={() => setWorkspaceView("all")}
         onSearch={setSearchQuery}
+        onToggleFavorite={(id) => setNotes((current) => current.map((note) => note.id === id ? { ...note, isFavorite: !note.isFavorite, editedAt: new Date().toISOString() } : note))}
       />
       <section className="min-w-0 flex-1 overflow-auto">
         <header className="flex h-14 items-center border-b border-[#ebebe6] px-6 text-sm text-[#73736d]">
-          所有頁面 <span className="mx-2">/</span> {title}
+          <button onClick={() => setWorkspaceView("all")} className="hover:text-[#604deb]">所有檔案</button>
+          {workspaceView === "note" && <>{activeNote?.folderId && <><span className="mx-2">/</span><button onClick={() => { setActiveFolder(activeNote.folderId!); setWorkspaceView("all"); }} className="hover:text-[#604deb]">{folders.find((folder) => folder.id === activeNote.folderId)?.name || "資料夾"}</button></>}<span className="mx-2">/</span><span>{title}</span></>}
           <button onClick={() => setRecordingPanel(true)} className="ml-auto rounded p-2 text-[#715df2] hover:bg-[#f0edff]" title={clips.length ? "開啟語音記錄" : "開始或上傳語音"}><PanelRight className="h-5 w-5" /></button>
         </header>
         {workspaceView === "all" ? (
-          <AllFiles notes={notes} folders={folders} clips={workspaceClips} query={searchQuery} onOpen={selectNote} onMove={moveNote} />
+          <AllFiles notes={notes} folders={folders} clips={workspaceClips} query={searchQuery} onOpen={selectNote} onMove={moveNote} onOpenPanel={() => setRecordingPanel(true)} />
         ) : (
         <div className="mx-auto max-w-4xl px-10 py-9">
           <div className="flex items-center gap-3">
@@ -1126,8 +1135,11 @@ export default function Home() {
   );
 }
 
-function AllFiles({ notes, folders, clips, query, onOpen, onMove }: { notes: NoteItem[]; folders: FolderItem[]; clips: StoredClip[]; query: string; onOpen: (note: NoteItem) => void; onMove: (id: string, folderId?: string) => void }) {
+function AllFiles({ notes, folders, clips, query, onOpen, onMove, onOpenPanel }: { notes: NoteItem[]; folders: FolderItem[]; clips: StoredClip[]; query: string; onOpen: (note: NoteItem) => void; onMove: (id: string, folderId?: string) => void; onOpenPanel: () => void }) {
   const [view, setView] = useState<"grid" | "list">("grid");
+  const [openedFolderId, setOpenedFolderId] = useState<string | null>(null);
+  const [draggedNoteId, setDraggedNoteId] = useState<string | null>(null);
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const normalized = query.trim().toLocaleLowerCase();
   const visible = notes.filter((note) => {
     if (!normalized) return true;
@@ -1135,7 +1147,24 @@ function AllFiles({ notes, folders, clips, query, onOpen, onMove }: { notes: Not
     const haystack = [note.title, note.contentHtml?.replace(/<[^>]*>/g, "") || "", folders.find((folder) => folder.id === note.folderId)?.name || "", clipText].join(" ").toLocaleLowerCase();
     return haystack.includes(normalized);
   });
-  return <div className="mx-auto max-w-5xl px-10 py-9"><div className="flex items-center"><div><h1 className="text-3xl font-bold">所有檔案</h1><p className="mt-2 text-sm text-[#888]">以資料夾管理筆記；可直接拖曳筆記至資料夾。</p></div><div className="ml-auto flex rounded-md border border-[#e4e4df] p-1 text-xs"><button onClick={() => setView("grid")} className={`rounded px-2 py-1 ${view === "grid" ? "bg-[#ece9ff] text-[#604deb]" : ""}`}>網格</button><button onClick={() => setView("list")} className={`rounded px-2 py-1 ${view === "list" ? "bg-[#ece9ff] text-[#604deb]" : ""}`}>列表</button></div></div><div className={`mt-7 ${view === "grid" ? "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" : "space-y-2"}`}>{folders.map((folder) => <div key={folder.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const id = event.dataTransfer.getData("text/memo-note"); if (id) onMove(id, folder.id); }} className="rounded-xl border border-[#e8e8e3] bg-[#fafaf8] p-4 transition hover:border-[#a99cff]"><div className="flex items-center gap-2 text-sm font-medium"><Folder className="h-5 w-5 text-[#715df2]" />{folder.name}</div><p className="mt-2 text-xs text-[#999]">{notes.filter((note) => note.folderId === folder.id).length} 筆筆記 · 拖曳至此歸檔</p></div>)}</div><h2 className="mt-10 text-lg font-semibold">最近筆記</h2><div className="mt-3 space-y-2">{visible.map((note) => <div key={note.id} draggable onDragStart={(event) => event.dataTransfer.setData("text/memo-note", note.id)} className="flex items-center rounded-lg border border-[#e8e8e3] px-4 py-3 hover:bg-[#fafaf8]"><button onClick={() => onOpen(note)} className="min-w-0 flex-1 text-left"><b className="block truncate"><span className="mr-2">{note.emoji || "📄"}</span>{note.title}</b><span className="text-xs text-[#999]">{folders.find((folder) => folder.id === note.folderId)?.name || "未歸檔"} · {new Date(note.editedAt).toLocaleDateString("zh-TW")}</span></button><select aria-label="移動筆記至資料夾" value={note.folderId || ""} onChange={(event) => onMove(note.id, event.target.value || undefined)} className="rounded border border-[#e3e3dd] bg-white px-2 py-1 text-xs"><option value="">未歸檔</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></div>)}</div>{!visible.length && <EmptyState title="找不到檔案" description="試著改用其他關鍵字搜尋。" />}</div>;
+  const openedFolder = folders.find((folder) => folder.id === openedFolderId);
+  const shownNotes = openedFolder
+    ? visible.filter((note) => note.folderId === openedFolder.id)
+    : visible.filter((note) => !note.folderId);
+  const beginDrag = (event: DragEvent<HTMLDivElement>, noteId: string) => {
+    event.dataTransfer.setData("text/memo-note", noteId);
+    event.dataTransfer.effectAllowed = "move";
+    setDraggedNoteId(noteId);
+  };
+  const dropInFolder = (event: DragEvent<HTMLDivElement>, folderId: string) => {
+    event.preventDefault();
+    const noteId = event.dataTransfer.getData("text/memo-note");
+    if (noteId) onMove(noteId, folderId);
+    setDraggedNoteId(null);
+    setDragOverFolderId(null);
+  };
+  const noteCard = (note: NoteItem) => <div key={note.id} draggable onDragStart={(event) => beginDrag(event, note.id)} onDragEnd={() => { setDraggedNoteId(null); setDragOverFolderId(null); }} className={`group flex cursor-grab items-center rounded-lg border border-[#e8e8e3] px-4 py-3 transition active:cursor-grabbing hover:bg-[#fafaf8] ${draggedNoteId === note.id ? "scale-95 opacity-45 shadow-sm" : ""}`}><span className="mr-3 text-xl">{note.emoji || "📄"}</span><button onClick={() => onOpen(note)} className="min-w-0 flex-1 text-left"><b className="block truncate">{note.title || "未命名筆記"}</b><span className="text-xs text-[#999]">{new Date(note.editedAt).toLocaleString("zh-TW")}</span></button></div>;
+  return <div className="mx-auto max-w-5xl px-10 py-9"><div className="flex items-center"><div>{openedFolder ? <button onClick={() => setOpenedFolderId(null)} className="mb-2 text-sm text-[#715df2] hover:underline">← 所有檔案</button> : null}<h1 className="text-3xl font-bold">{openedFolder ? openedFolder.name : "所有檔案"}</h1><p className="mt-2 text-sm text-[#888]">{openedFolder ? "此資料夾中的筆記" : "以資料夾管理筆記；可直接拖曳筆記至資料夾。"}</p></div><div className="ml-auto flex items-center gap-2"><button onClick={onOpenPanel} className="rounded-md p-2 text-[#715df2] hover:bg-[#f0edff]" title="開啟語音記錄"><PanelRight className="h-5 w-5" /></button><div className="flex rounded-md border border-[#e4e4df] p-1 text-xs"><button onClick={() => setView("grid")} className={`flex items-center gap-1 rounded px-2 py-1 ${view === "grid" ? "bg-[#ece9ff] text-[#604deb]" : ""}`}><Grid2X2 className="h-3.5 w-3.5" />網格</button><button onClick={() => setView("list")} className={`flex items-center gap-1 rounded px-2 py-1 ${view === "list" ? "bg-[#ece9ff] text-[#604deb]" : ""}`}><LayoutList className="h-3.5 w-3.5" />列表</button></div></div></div>{!openedFolder && <div className={`mt-7 ${view === "grid" ? "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" : "space-y-2"}`}>{folders.map((folder) => <div key={folder.id} onClick={() => setOpenedFolderId(folder.id)} onDragOver={(event) => event.preventDefault()} onDragEnter={() => setDragOverFolderId(folder.id)} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragOverFolderId(null); }} onDrop={(event) => dropInFolder(event, folder.id)} className={`cursor-pointer rounded-xl border bg-[#fafaf8] p-4 transition ${dragOverFolderId === folder.id ? "border-[#715df2] bg-[#f0edff] ring-2 ring-[#c9c1ff]" : "border-[#e8e8e3] hover:border-[#a99cff]"}`}><div className="flex items-center gap-2 text-sm font-medium"><Folder className="h-5 w-5 text-[#715df2]" />{folder.name}</div><p className="mt-2 text-xs text-[#999]">{notes.filter((note) => note.folderId === folder.id).length} 筆筆記</p></div>)}</div>}<h2 className="mt-10 text-lg font-semibold">{openedFolder ? "筆記" : "未分類筆記"}</h2><div className={`mt-3 ${view === "grid" ? "grid grid-cols-1 gap-2 sm:grid-cols-2" : "space-y-2"}`}>{shownNotes.map(noteCard)}</div>{!shownNotes.length && <EmptyState title={openedFolder ? "此資料夾尚無筆記" : "沒有未分類筆記"} description={openedFolder ? "可將左側或下方的筆記拖曳到這個資料夾。" : "新增筆記後會顯示在這裡。"} />}{!visible.length && normalized && <EmptyState title="找不到檔案" description="試著改用其他關鍵字搜尋。" />}</div>;
 }
 function Sidebar({
   notes,
@@ -1154,6 +1183,7 @@ function Sidebar({
   onFolderSelect,
   onAllFiles,
   onSearch,
+  onToggleFavorite,
 }: {
   notes: NoteItem[];
   activeNoteId: string;
@@ -1171,8 +1201,11 @@ function Sidebar({
   onFolderSelect: (id: string | "all") => void;
   onAllFiles: () => void;
   onSearch: (value: string) => void;
+  onToggleFavorite: (id: string) => void;
 }) {
   const { user } = useUser();
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  const [pinsOpen, setPinsOpen] = useState(true);
   return (
     <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-[#e9e9e4] bg-[#fbfbfa] p-3">
       <div className="mb-7 flex items-center gap-2 px-2 pt-1 text-lg font-semibold">
@@ -1198,11 +1231,10 @@ function Sidebar({
       </label>
       <div className="mt-7 flex items-center justify-between px-2 text-xs text-[#999]"><span>資料夾</span><button onClick={onCreateFolder} className="rounded p-1 text-base hover:bg-[#efefea]" aria-label="新增資料夾">+</button></div>
       <div className="mt-2">
-        <button onClick={() => onFolderSelect("all")} className={`flex w-full gap-2 rounded px-2 py-1 text-left text-sm ${activeFolder === "all" ? "text-[#604deb]" : "text-[#666]"}`}>
-          <Folder className="h-4 w-4" />
-          最近筆記
+        <button onClick={() => onFolderSelect("all")} className={`flex w-full gap-2 rounded px-2 py-1 text-left text-sm ${activeFolder === "all" ? "text-[#604deb]" : "text-[#666] hover:bg-[#efefea]"}`}>
+          <Folder className="h-4 w-4" />未分類筆記
         </button>
-        {folders.map((folder) => <div key={folder.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { const id = e.dataTransfer.getData("text/memo-note"); if (id) onMoveNote(id, folder.id); }} onContextMenu={(e) => { e.preventDefault(); if (window.confirm("按「確定」重新命名；按「取消」刪除資料夾。")) onRenameFolder(folder.id); else onDeleteFolder(folder.id); }} className={`mt-1 rounded ${activeFolder === folder.id ? "bg-[#ece9ff] text-[#604deb]" : "text-[#666] hover:bg-[#efefea]"}`}><button onClick={() => onFolderSelect(folder.id)} className="flex w-full gap-2 px-2 py-1 text-left text-sm"><Folder className="h-4 w-4" />{folder.name}</button>{notes.filter((note) => note.folderId === folder.id).map((note) => <button key={note.id} draggable onDragStart={(event) => event.dataTransfer.setData("text/memo-note", note.id)} onClick={() => onSelect(note)} className={`flex w-full items-center gap-1 truncate py-1 pl-8 pr-2 text-left text-sm ${activeNoteId === note.id ? "text-[#604deb]" : "text-[#555]"}`}><span>{note.emoji || "📄"}</span>{note.title || "未命名筆記"}</button>)}</div>)}
+        {folders.map((folder) => <div key={folder.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { const id = e.dataTransfer.getData("text/memo-note"); if (id) onMoveNote(id, folder.id); }} onContextMenu={(e) => { e.preventDefault(); if (window.confirm("按「確定」重新命名；按「取消」刪除資料夾。")) onRenameFolder(folder.id); else onDeleteFolder(folder.id); }} className="mt-1"><div className={`flex items-center rounded ${activeFolder === folder.id ? "bg-[#ece9ff] text-[#604deb]" : "text-[#666]"}`}><button onClick={() => setCollapsedFolders((current) => ({ ...current, [folder.id]: !current[folder.id] }))} className="grid h-7 w-7 place-items-center rounded hover:bg-[#efefea]" aria-label={collapsedFolders[folder.id] ? "展開資料夾" : "收合資料夾"}><ChevronRight className={`h-3.5 w-3.5 transition ${collapsedFolders[folder.id] ? "" : "rotate-90"}`} /></button><button onClick={() => onFolderSelect(folder.id)} className="flex min-w-0 flex-1 items-center gap-2 rounded py-1 pr-2 text-left text-sm hover:bg-[#efefea]"><Folder className="h-4 w-4" />{folder.name}</button></div>{!collapsedFolders[folder.id] && notes.filter((note) => note.folderId === folder.id).map((note) => <div key={note.id} draggable onDragStart={(event) => event.dataTransfer.setData("text/memo-note", note.id)} className={`group flex items-center rounded ${activeNoteId === note.id ? "bg-[#ece9ff] text-[#604deb]" : "text-[#555]"}`}><button onClick={() => onSelect(note)} className="min-w-0 flex-1 truncate py-1 pl-8 pr-1 text-left text-sm hover:bg-[#efefea]"><span className="mr-1">{note.emoji || "📄"}</span>{note.title || "未命名筆記"}</button><button onClick={() => onToggleFavorite(note.id)} className={`mr-1 hidden rounded p-1 group-hover:block ${note.isFavorite ? "text-[#715df2]" : "text-[#999]"}`} aria-label="釘選筆記"><Pin className="h-3 w-3" /></button></div>)}</div>)}
         <div className="mt-1 space-y-0.5">
           {notes.filter((note) => !note.folderId && activeFolder === "all").map((note) => (
             <div
@@ -1224,9 +1256,11 @@ function Sidebar({
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
+              <button onClick={() => onToggleFavorite(note.id)} className={`mr-1 hidden rounded p-1 group-hover:block ${note.isFavorite ? "text-[#715df2]" : "text-[#999]"}`} aria-label="釘選筆記"><Pin className="h-3 w-3" /></button>
             </div>
           ))}
         </div>
+        <div className="mt-5 border-t border-[#e9e9e4] pt-3"><button onClick={() => setPinsOpen((value) => !value)} className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs text-[#777] hover:bg-[#efefea]"><ChevronRight className={`h-3.5 w-3.5 transition ${pinsOpen ? "rotate-90" : ""}`} />釘選筆記</button>{pinsOpen && notes.filter((note) => note.isFavorite).map((note) => <button key={note.id} onClick={() => onSelect(note)} className="flex w-full items-center gap-1 truncate rounded px-2 py-1 text-left text-sm text-[#555] hover:bg-[#efefea]"><Pin className="h-3 w-3 text-[#715df2]" /><span>{note.emoji || "📄"}</span>{note.title}</button>)}</div>
       </div>
       <div role="button" tabIndex={0} onClick={() => document.querySelector<HTMLElement>(".cl-userButtonTrigger")?.click()} className="mt-auto flex cursor-pointer items-center gap-2 border-t border-[#e9e9e4] px-2 py-3 text-sm text-[#73736d] hover:bg-[#f1f1ed]">
         <UserButton
