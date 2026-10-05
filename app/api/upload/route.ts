@@ -12,7 +12,9 @@ export async function POST(request: Request) {
       token: process.env.MEMO_FILES_READ_WRITE_TOKEN,
       onBeforeGenerateToken: async (pathname) => ({
         allowedContentTypes: ["image/*", "audio/*", "video/mp4", "video/webm", "video/quicktime", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
-        maximumSizeInBytes: 100 * 1024 * 1024,
+        // Uploads go direct to Blob. Files over OpenAI's 25MB single-request
+        // limit are split into audio chunks by /api/transcribe.
+        maximumSizeInBytes: 250 * 1024 * 1024,
         addRandomSuffix: true,
         tokenPayload: JSON.stringify({ userId, pathname }),
       }),

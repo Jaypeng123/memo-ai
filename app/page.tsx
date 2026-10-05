@@ -1430,6 +1430,7 @@ function RecordingPanel({
             </>
           )}
         </div>
+        {!recording && <p className="mt-2 text-xs text-[#999]">支援 MP3、M4A、WAV、WebM、MP4、MOV；單檔最高 250MB。超過 25MB 會自動擷取音軌並分段轉錄。</p>}
         {clips.length > 0 && (
           <div className="mt-3 space-y-2">
             {clips.map((clip, index) => (
