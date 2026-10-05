@@ -5,6 +5,8 @@ const system = `你是一位具有 10 年實務經驗的資深 UI/UX 設計師�
 若有重點，只建立逐字稿實際提及的區塊；不可使用固定模板，不可補齊空白章節。每個區塊用貼近內容的自然標題，例如「已確認方向」、「使用者回饋」或「後續工作」。必須先理解語意再重新組織，將口語贅詞、重複與不完整句整理為清楚自然的書面繁體中文；英文產品名稱、縮寫與專有名詞要依語境校正，不可逐字照抄或改變意思。每一項決策、洞察與行動項目盡可能附來源時間戳（例如：來源：02:15）。不可以補寫、猜測或捏造資訊。`;
 
 export async function POST(request: Request) {
+  const { userId } = await auth();
+  if (!userId) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const { transcript, template = "會議紀錄" } = (await request.json()) as { transcript: string; template?: string };
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -29,3 +31,4 @@ export async function POST(request: Request) {
   if (notes === "__EMPTY__") return Response.json({ empty: true, notes: "" });
   return Response.json({ empty: false, notes });
 }
+import { auth } from "@clerk/nextjs/server";

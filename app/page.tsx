@@ -3,6 +3,7 @@
 import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
 import { UserButton, useUser } from "@clerk/nextjs";
 import { upload } from "@vercel/blob/client";
+import { pendingRecordings, removePendingRecording, savePendingRecording } from "@/lib/pending-recordings";
 import {
   AudioLines,
   CircleStop,
@@ -47,6 +48,7 @@ type Clip = {
   transcript?: Segment[];
   summary?: string;
 };
+type SyncState = "local" | "syncing" | "failed" | "synced";
 type NoteSession = { clips: Clip[]; segments: Segment[]; summary: string; seconds: number; selectedClipId: string | null };
 type PanelTab = "transcript" | "summary";
 type Tab = "notes" | "transcript" | "summary";
@@ -64,6 +66,7 @@ export default function Home() {
   const editor = useRef<HTMLDivElement>(null),
     selection = useRef<Range | null>(null),
     imageInput = useRef<HTMLInputElement>(null),
+    audioInput = useRef<HTMLInputElement>(null),
     activeBlock = useRef<HTMLElement | null>(null),
     blockLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recorder = useRef<MediaRecorder | null>(null),
@@ -75,7 +78,8 @@ export default function Home() {
     secondsRef = useRef(0),
     sessions = useRef(new Map<string, NoteSession>()),
     recordingNoteId = useRef<string | null>(null),
-    activeNoteRef = useRef(initialNoteId);
+    activeNoteRef = useRef(initialNoteId),
+    pendingRestored = useRef(false);
   const [tab, setTab] = useState<Tab>("notes"),
     [title, setTitle] = useState("未命名筆記"),
     [emoji, setEmoji] = useState("📄"),
@@ -113,8 +117,10 @@ export default function Home() {
     [recordingPanel, setRecordingPanel] = useState(false),
     [selectedClipId, setSelectedClipId] = useState<string | null>(null),
     [panelTab, setPanelTab] = useState<PanelTab>("transcript"),
+    [syncStates, setSyncStates] = useState<Record<string, SyncState>>({}),
     [error, setError] = useState(""),
     [status, setStatus] = useState("可直接寫筆記；需要時再開始錄音。");
+  const workspaceRef = useRef({ notes, folders });
 
   useEffect(() => {
     if (!recording || paused) return;
@@ -129,6 +135,7 @@ export default function Home() {
     return () => clearInterval(id);
   }, [recording, paused]);
   useEffect(() => { activeNoteRef.current = activeNoteId; }, [activeNoteId]);
+  useEffect(() => { workspaceRef.current = { notes, folders }; }, [notes, folders]);
   useEffect(() => {
     if (!authLoaded || !isSignedIn) return;
     let cancelled = false;
@@ -159,6 +166,36 @@ export default function Home() {
       .finally(() => !cancelled && setWorkspaceLoaded(true));
     return () => { cancelled = true; };
   }, [authLoaded, isSignedIn]);
+  useEffect(() => {
+    if (!workspaceLoaded || !isSignedIn || pendingRestored.current) return;
+    pendingRestored.current = true;
+    void pendingRecordings().then((pending) => {
+      for (const item of pending) {
+        const existing = sessions.current.get(item.noteId);
+        // A locally queued recording can outlive a deleted note. Keep it in
+        // IndexedDB rather than silently deleting it; it can be recovered once
+        // the corresponding note is available again.
+        if (!existing) continue;
+        if (existing.clips.some((clip) => clip.id === item.id)) continue;
+        const clip: Clip = {
+          id: item.id,
+          url: URL.createObjectURL(item.blob),
+          blob: item.blob,
+          duration: item.duration,
+          createdAt: item.createdAt,
+          title: "錄音",
+        };
+        const next = [...existing.clips, clip];
+        sessions.current.set(item.noteId, { ...existing, clips: next, seconds: existing.seconds + item.duration, selectedClipId: existing.selectedClipId || clip.id });
+        setSyncStates((current) => ({ ...current, [item.id]: "local" }));
+        if (item.noteId === activeNoteRef.current) {
+          setClips(next);
+          setSelectedClipId((current) => current || clip.id);
+        }
+        void syncRecording(clip, item.noteId);
+      }
+    }).catch((cause) => console.error("pending recordings restore failed", cause));
+  }, [workspaceLoaded, isSignedIn]);
   useEffect(() => {
     window.localStorage.setItem("memo-ai-notes", JSON.stringify(notes));
   }, [notes]);
@@ -354,6 +391,43 @@ export default function Home() {
     setMenu(kind);
   };
 
+  /** Upload only after the blob has been committed to IndexedDB. */
+  const syncRecording = async (clip: Clip, noteId: string) => {
+    if (!clip.blob) return;
+    setSyncStates((current) => ({ ...current, [clip.id]: "syncing" }));
+    try {
+      // A new note may be recorded immediately after creation. Persist the
+      // current workspace first so the ownership check in /api/clips is valid.
+      const snapshot = workspaceRef.current;
+      const workspaceResponse = await fetch("/api/workspace", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(snapshot),
+      });
+      if (!workspaceResponse.ok) throw new Error("筆記資料尚未同步");
+      const remote = await upload(`recordings/${noteId}/${clip.id}.webm`, clip.blob, {
+        access: "private",
+        handleUploadUrl: "/api/upload",
+      });
+      const metadataResponse = await fetch("/api/clips", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: clip.id, noteId, blobUrl: remote.url, duration: clip.duration }),
+      });
+      if (!metadataResponse.ok) {
+        const body = (await metadataResponse.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || "錄音中繼資料同步失敗");
+      }
+      await removePendingRecording(clip.id);
+      setSyncStates((current) => ({ ...current, [clip.id]: "synced" }));
+    } catch (cause) {
+      console.error("recording sync failed", cause);
+      // Keep the exact blob locally. The user can retry without recording
+      // again, even after a refresh.
+      setSyncStates((current) => ({ ...current, [clip.id]: "failed" }));
+    }
+  };
+
   const start = async () => {
     setError("");
     try {
@@ -394,18 +468,22 @@ export default function Home() {
           setClips(next);
           setSelectedClipId(clip.id);
         }
+        setSyncStates((current) => ({ ...current, [clip.id]: "local" }));
         void (async () => {
           try {
-            const remote = await upload(`recordings/${noteId}/${clip.id}.webm`, blob, { access: "private", handleUploadUrl: "/api/upload" });
-            await fetch("/api/clips", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: clip.id, noteId, blobUrl: remote.url, duration: clip.duration }) });
-          } catch {
-            setError("錄音已暫存於本次工作階段，但上傳至私有儲存空間失敗。 ");
+            // This is the durability boundary: once this resolves, a browser
+            // refresh cannot discard the audio even if cloud sync is down.
+            await savePendingRecording({ id: clip.id, noteId, blob, duration: clip.duration, createdAt: clip.createdAt });
+            void syncRecording(clip, noteId);
+          } catch (cause) {
+            console.error("local recording save failed", cause);
+            setError("無法安全保存本機錄音，請確認瀏覽器的儲存空間權限後再試。 ");
           }
         })();
         setPanelTab("transcript");
         closeAudio();
         recordingNoteId.current = null;
-        setStatus("錄音片段已儲存。可繼續新增下一段錄音，或產生逐字稿。 ");
+        setStatus("本機已安全保存，正在同步至雲端。 ");
       };
       const ac = new AudioContext(),
         analyser = ac.createAnalyser();
@@ -448,6 +526,32 @@ export default function Home() {
     } else {
       media.resume();
       setPaused(false);
+    }
+  };
+  const importAudio = async (file: File) => {
+    const noteId = activeNoteId;
+    const blob = file.slice(0, file.size, file.type || "audio/mpeg");
+    const clip: Clip = {
+      id: crypto.randomUUID(),
+      url: URL.createObjectURL(blob),
+      blob,
+      duration: 0,
+      createdAt: new Date().toISOString(),
+      title: "錄音",
+    };
+    const existing = sessions.current.get(noteId)?.clips || clips;
+    const next = [...existing, clip];
+    sessions.current.set(noteId, { clips: next, segments: [], summary: "", seconds: secondsRef.current, selectedClipId: clip.id });
+    setClips(next);
+    setSelectedClipId(clip.id);
+    setSyncStates((current) => ({ ...current, [clip.id]: "local" }));
+    try {
+      await savePendingRecording({ id: clip.id, noteId, blob, duration: 0, createdAt: clip.createdAt });
+      void syncRecording(clip, noteId);
+      setStatus("音訊檔已安全保存於本機，正在同步至雲端。 ");
+    } catch (cause) {
+      console.error("audio import save failed", cause);
+      setError("無法安全保存匯入的音訊檔，請確認瀏覽器儲存空間。 ");
     }
   };
   const stop = () => {
@@ -507,10 +611,12 @@ export default function Home() {
   };
   const summarize = async () => {
     const clip = clips.find((item) => item.id === selectedClipId);
-    let source = clip?.transcript || segments;
-    if (!source.length && clip) source = (await transcribe()) || [];
+    // A meeting summary is deliberately a second step. It never starts a
+    // transcription implicitly, and when multiple recordings exist it uses
+    // the merged transcript context for this note.
+    const source = clips.flatMap((item) => item.transcript || []);
     if (!source.length) {
-      setError("請先選擇一段錄音，或完成逐字稿後再生成會議紀錄。 ");
+      setError("請先產生逐字稿，再生成會議紀錄。 ");
       return;
     }
     setGenerating(true);
@@ -538,7 +644,7 @@ export default function Home() {
             item.id === clip.id ? { ...item, summary: nextSummary } : item,
           ),
         );
-      if (clip) void fetch("/api/clips", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: clip.id, transcript: source, summary: nextSummary }) });
+      if (clip) void fetch("/api/clips", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: clip.id, transcript: clip.transcript || [], summary: nextSummary }) });
       setPanelTab("summary");
       setStatus(
         data.empty
@@ -550,6 +656,20 @@ export default function Home() {
     } finally {
       setGenerating(false);
     }
+  };
+
+  const insertSummaryIntoNote = () => {
+    if (!summary.trim()) return;
+    const escaped = summary
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .split("\n")
+      .map((line) => `<p>${line || "<br>"}</p>`)
+      .join("");
+    insert(escaped);
+    saveEditor();
+    setStatus("AI 會議紀錄已插入至中央筆記，可繼續編輯。 ");
   };
 
   const addImage = async (file: File, range?: Range | null) => {
@@ -667,7 +787,7 @@ export default function Home() {
       <section className="min-w-0 flex-1 overflow-auto">
         <header className="flex h-14 items-center border-b border-[#ebebe6] px-6 text-sm text-[#73736d]">
           所有頁面 <span className="mx-2">/</span> {title}
-          {clips.length > 0 && <button onClick={() => setRecordingPanel(true)} className="ml-auto rounded p-2 text-[#715df2] hover:bg-[#f0edff]" title="開啟語音記錄"><PanelRight className="h-5 w-5" /></button>}
+          <button onClick={() => setRecordingPanel(true)} className="ml-auto rounded p-2 text-[#715df2] hover:bg-[#f0edff]" title={clips.length ? "開啟語音記錄" : "開始或上傳語音"}><PanelRight className="h-5 w-5" /></button>
         </header>
         {workspaceView === "all" ? (
           <AllFiles notes={notes} folders={folders} query={searchQuery} onOpen={selectNote} onMove={moveNote} />
@@ -724,8 +844,12 @@ export default function Home() {
               selectedClipId={selectedClipId}
               panelTab={panelTab}
               generating={generating}
+              syncStates={syncStates}
               onPanelTab={setPanelTab}
               onGenerate={summarize}
+              onInsertSummary={insertSummaryIntoNote}
+              onUploadAudio={() => audioInput.current?.click()}
+              onRetrySync={(clip) => void syncRecording(clip, activeNoteId)}
               onSelectClip={(clip) => {
                 setSelectedClipId(clip.id);
                 setSegments(clip.transcript || []);
@@ -738,10 +862,13 @@ export default function Home() {
                   if (removed) URL.revokeObjectURL(removed.url);
                   return current.filter((clip) => clip.id !== clipId);
                 });
+                void removePendingRecording(clipId);
+                setSyncStates((current) => { const next = { ...current }; delete next[clipId]; return next; });
                 void fetch("/api/clips", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: clipId }) });
                 if (selectedClipId === clipId) { setSelectedClipId(null); setSegments([]); setSummary(""); }
               }}
             />
+            <input ref={audioInput} type="file" accept="audio/*" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importAudio(file); event.currentTarget.value = ""; }} />
             </>
           )}
           <nav className="hidden mt-7 items-center gap-1 border-b border-[#e9e9e4]">
@@ -1122,8 +1249,12 @@ function RecordingPanel({
   selectedClipId,
   panelTab,
   generating,
+  syncStates,
   onPanelTab,
   onGenerate,
+  onInsertSummary,
+  onUploadAudio,
+  onRetrySync,
   onSelectClip,
   onDeleteClip,
 }: {
@@ -1143,12 +1274,25 @@ function RecordingPanel({
   selectedClipId: string | null;
   panelTab: PanelTab;
   generating: boolean;
+  syncStates: Record<string, SyncState>;
   onPanelTab: (tab: PanelTab) => void;
   onGenerate: () => void;
+  onInsertSummary: () => void;
+  onUploadAudio: () => void;
+  onRetrySync: (clip: Clip) => void;
   onSelectClip: (clip: Clip) => void;
   onDeleteClip: (clipId: string) => void;
 }) {
   const selected = clips.find((clip) => clip.id === selectedClipId);
+  const players = useRef<Record<string, HTMLAudioElement | null>>({});
+  const hasTranscript = clips.some((clip) => Boolean(clip.transcript?.length));
+  const syncLabel = (clip: Clip) => {
+    const state = syncStates[clip.id];
+    if (state === "syncing") return "雲端同步中";
+    if (state === "failed") return "同步失敗・重試";
+    if (state === "local") return "本機已安全保存";
+    return "已同步";
+  };
   return (
     <aside className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[430px] flex-col border-l border-[#e5e5e0] bg-white shadow-2xl">
       <div className="flex items-center gap-2 border-b border-[#eee] px-5 py-4">
@@ -1186,13 +1330,10 @@ function RecordingPanel({
         )}
         <div className="mt-3 flex flex-wrap gap-2">
           {!recording && (
-            <button
-              onClick={onStart}
-              className="rounded-md bg-[#2f2f2f] px-3 py-2 text-sm text-white"
-            >
-              <Mic className="mr-1 inline h-4 w-4" />
-              {clips.length ? "新增錄音片段" : "開始錄音"}
-            </button>
+            <>
+              <button onClick={onStart} className="rounded-md bg-[#2f2f2f] px-3 py-2 text-sm text-white"><Mic className="mr-1 inline h-4 w-4" />開始錄音</button>
+              <button onClick={onUploadAudio} className="rounded-md border border-[#deded8] px-3 py-2 text-sm text-[#444]"><FileAudio className="mr-1 inline h-4 w-4" />上傳音訊</button>
+            </>
           )}
           {recording && (
             <>
@@ -1225,7 +1366,9 @@ function RecordingPanel({
               >
                 <b className="w-12 whitespace-nowrap text-xs font-medium">錄音 {index + 1}</b>
                 <span className="whitespace-nowrap text-[#777]">{fmt(clip.duration)}</span>
-                <audio controls controlsList="nodownload noplaybackrate" className="h-7 flex-1" src={clip.url} />
+                <span className={`ml-auto whitespace-nowrap text-[11px] ${syncStates[clip.id] === "failed" ? "text-red-600" : "text-[#777]"}`}>{syncLabel(clip)}</span>
+                <audio ref={(node) => { players.current[clip.id] = node; }} controls controlsList="nodownload noplaybackrate" className="h-7 max-w-24" src={clip.url} />
+                {syncStates[clip.id] === "failed" && <button onClick={(event) => { event.stopPropagation(); onRetrySync(clip); }} className="rounded border border-red-200 px-1.5 py-1 text-[11px] text-red-700">重試</button>}
                 <button onClick={(event) => { event.stopPropagation(); onDeleteClip(clip.id); }} className="rounded p-1 text-[#888] hover:bg-white hover:text-red-600" aria-label={`刪除 ${clip.title}`}><Trash2 className="h-3.5 w-3.5" /></button>
               </div>
             ))}
@@ -1233,8 +1376,8 @@ function RecordingPanel({
         )}
         {selected && <div className="mt-7 border-t border-[#eee] pt-4">
           <div className="flex gap-1 border-b border-[#eee] text-sm"><button onClick={() => onPanelTab("transcript")} className={`px-2 py-2 ${panelTab === "transcript" ? "border-b-2 border-[#715df2] text-[#604deb]" : "text-[#777]"}`}>逐字稿</button><button onClick={() => onPanelTab("summary")} className={`px-2 py-2 ${panelTab === "summary" ? "border-b-2 border-[#715df2] text-[#604deb]" : "text-[#777]"}`}>AI 總結</button></div>
-          {panelTab === "transcript" && <div className="mt-4"><button disabled={transcribing} onClick={onTranscribe} className="mb-3 rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb]">{transcribing ? "轉錄中…" : "轉為逐字稿"}</button><button disabled={generating} onClick={onGenerate} className="mb-3 ml-2 rounded-md bg-[#715df2] px-3 py-2 text-sm text-white disabled:opacity-40">{generating ? "生成中…" : "AI 生成會議紀錄"}</button>{selected.transcript?.length ? selected.transcript.map((item, index) => <p key={index} className="mb-2 rounded bg-[#fafaf8] p-3 text-sm leading-6"><b className="mr-2 text-[#715df2]">{fmt(item.start)}</b>{item.text}</p>) : <p className="py-6 text-sm text-[#999]">尚未產生逐字稿。</p>}</div>}
-          {panelTab === "summary" && <div className="mt-4"><button disabled={generating} onClick={onGenerate} className="mb-3 rounded-md bg-[#715df2] px-3 py-2 text-sm text-white disabled:opacity-40">{generating ? "生成中…" : "AI 生成會議紀錄"}</button>{selected.summary ? <p className="whitespace-pre-wrap text-sm leading-7">{selected.summary}</p> : <p className="py-6 text-sm text-[#999]">尚未產生 AI 會議紀錄。</p>}</div>}
+          {panelTab === "transcript" && <div className="mt-4"><button disabled={transcribing} onClick={onTranscribe} className="mb-3 rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb]">{transcribing ? "轉錄中…" : "轉為逐字稿"}</button>{selected.transcript?.length ? selected.transcript.map((item, index) => <div key={index} className="mb-2 rounded bg-[#fafaf8] p-3 text-sm leading-6"><button onClick={() => { const player = players.current[selected.id]; if (player) { player.currentTime = item.start; void player.play(); } }} className="mr-2 font-mono text-[#715df2] hover:underline" title="從此時間播放">{fmt(item.start)}</button><b className="mr-2 text-[#444]">{item.speaker}</b>{item.text}</div>) : <p className="py-6 text-sm text-[#999]">尚未產生逐字稿。</p>}</div>}
+          {panelTab === "summary" && <div className="mt-4"><button disabled={generating || !hasTranscript} onClick={onGenerate} title={hasTranscript ? "整合此筆記的所有逐字稿" : "請先產生逐字稿"} className="mb-3 rounded-md bg-[#715df2] px-3 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-40">{generating ? "生成中…" : "AI 生成會議紀錄"}</button>{!hasTranscript && <p className="mb-3 text-xs text-[#999]">請先產生逐字稿</p>}{selected.summary ? <><div className="mb-3 flex gap-2"><button onClick={onInsertSummary} className="rounded-md border border-[#715df2] px-3 py-2 text-sm text-[#604deb]">插入至筆記</button><button onClick={() => navigator.clipboard.writeText(selected.summary || "")} className="rounded-md border px-3 py-2 text-sm">複製</button></div><p className="whitespace-pre-wrap text-sm leading-7">{selected.summary}</p></> : <p className="py-6 text-sm text-[#999]">尚未產生 AI 會議紀錄。</p>}</div>}
         </div>
         }
       </div>
